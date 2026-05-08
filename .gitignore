@@ -1,0 +1,39 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Vector database (large binary files)
+data/chroma/
+
+# Uploaded documents
+data/uploads/*
+
+# Keep the directory structure
+!data/uploads/.gitkeep
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment (contains API key)
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Distribution
+dist/
+build/
+*.egg-info/

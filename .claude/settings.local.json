@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(.venv/Scripts/pip list *)",
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(.venv/Scripts/python -c \"from backend.config import settings; print\\('config OK:', settings.deepseek_model\\); from backend.models.schemas import DocumentResponse; print\\('schemas OK'\\); from backend.services.document_service import load_and_split_document; print\\('doc_service OK'\\); from backend.services.vector_service import get_embeddings; print\\('vector_service OK'\\)\")",
+      "Bash(.venv/Scripts/python -c \"from backend.config import settings; print\\('config OK:', settings.deepseek_model\\); from backend.models.schemas import DocumentResponse; print\\('schemas OK'\\); from backend.services.document_service import load_and_split_document; print\\('doc_service OK'\\); from backend.services.vector_service import get_embeddings; print\\('vector_service OK'\\); from backend.services.qa_service import build_rag_chain; print\\('qa_service OK'\\); from backend.main import app; print\\('main OK'\\)\")",
+      "Bash(.venv/Scripts/uvicorn backend.main:app --host 0.0.0.0 --port 8000)",
+      "Bash(curl -s http://localhost:8000/api/health)",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s -X POST http://localhost:8000/api/documents/upload -F \"file=@data/uploads/test_knowledge.md\")",
+      "Bash(curl *)",
+      "Bash(HF_ENDPOINT=https://hf-mirror.com .venv/Scripts/uvicorn backend.main:app --host 0.0.0.0 --port 8000)",
+      "Bash(.venv/Scripts/python -c ' *)"
+    ]
+  }
+}
