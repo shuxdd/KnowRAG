@@ -1,7 +1,11 @@
+import json
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from backend.services.qa_service import (
     ask_question,
+    ask_question_stream,
     get_session_history_messages,
     clear_session_history,
 )
@@ -16,6 +20,18 @@ async def ask(req: QuestionRequest):
         return await ask_question(req.question, req.top_k, req.session_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"问答处理失败: {str(e)}")
+
+
+@router.post("/ask/stream")
+async def ask_stream(req: QuestionRequest):
+    async def event_stream():
+        try:
+            async for event in ask_question_stream(req.question, req.top_k, req.session_id):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/history/{session_id}", response_model=SessionHistory)

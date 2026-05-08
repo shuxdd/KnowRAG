@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_community.document_loaders import (
@@ -30,6 +31,7 @@ def get_loader_class(file_type: str):
 def load_and_split_document(file_path: str, file_type: str) -> tuple[list, str]:
     doc_id = uuid.uuid4().hex[:12]
     filename = Path(file_path).name
+    created_at = datetime.now(timezone.utc).isoformat()
 
     loader_cls = get_loader_class(file_type)
     if loader_cls is TextLoader:
@@ -46,6 +48,7 @@ def load_and_split_document(file_path: str, file_type: str) -> tuple[list, str]:
         doc.metadata["doc_id"] = doc_id
         doc.metadata["filename"] = filename
         doc.metadata["file_type"] = file_type
+        doc.metadata["created_at"] = created_at
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=settings.chunk_size,
@@ -53,8 +56,11 @@ def load_and_split_document(file_path: str, file_type: str) -> tuple[list, str]:
         separators=CHINESE_SEPARATORS,
     )
     chunks = splitter.split_documents(raw_docs)
+    total = len(chunks)
 
     for i, chunk in enumerate(chunks):
         chunk.metadata["chunk_index"] = i
+        chunk.metadata["total_chunks"] = total
+        chunk.metadata["chunk_id"] = f"{doc_id}_chunk_{i}"
 
     return chunks, doc_id

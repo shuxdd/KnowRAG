@@ -26,6 +26,8 @@ class SourceCitation(BaseModel):
     doc_id: str
     filename: str
     content_snippet: str
+    chunk_index: int = 0
+    page: int | None = None
 
 
 class HistoryMessage(BaseModel):

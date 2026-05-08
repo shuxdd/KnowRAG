@@ -1,3 +1,4 @@
+import json
 import streamlit as st
 import httpx
 import uuid
@@ -146,30 +147,60 @@ with tab2:
         st.session_state.chat_history.append({"role": "human", "content": question})
 
         with st.chat_message("assistant"):
-            with st.spinner("思考中..."):
-                try:
-                    resp = httpx.post(
-                        f"{BACKEND_URL}/api/qa/ask",
-                        json={
-                            "question": question,
-                            "top_k": top_k,
-                            "session_id": st.session_state.qa_session_id,
-                        },
-                        timeout=120,
-                    )
+            answer_placeholder = st.empty()
+            sources_placeholder = st.empty()
+            full_answer = ""
+            sources = []
+
+            try:
+                with httpx.stream(
+                    "POST",
+                    f"{BACKEND_URL}/api/qa/ask/stream",
+                    json={
+                        "question": question,
+                        "top_k": top_k,
+                        "session_id": st.session_state.qa_session_id,
+                    },
+                    timeout=120,
+                ) as resp:
                     if resp.status_code == 200:
-                        data = resp.json()
-                        st.markdown(data["answer"])
+                        for line in resp.iter_lines():
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]  # strip "data: " prefix
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                event = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            if event["type"] == "token":
+                                full_answer += event["content"]
+                                answer_placeholder.markdown(full_answer + "▌")
+                            elif event["type"] == "sources":
+                                sources = event.get("sources", [])
+                            elif event["type"] == "error":
+                                st.error(event["detail"])
+                                break
+
+                        # finalize display (remove cursor)
+                        answer_placeholder.markdown(full_answer)
 
                         st.session_state.chat_history.append(
-                            {"role": "ai", "content": data["answer"]}
+                            {"role": "ai", "content": full_answer}
                         )
 
-                        with st.expander(f"参考来源（{len(data['sources'])} 个）"):
-                            for i, src in enumerate(data["sources"], 1):
-                                st.markdown(f"**{i}. {src['filename']}**")
-                                st.text(src["content_snippet"])
+                        if sources:
+                            with st.expander(f"参考来源（{len(sources)} 个）"):
+                                for i, src in enumerate(sources, 1):
+                                    meta_line = f"**{i}. {src['filename']}**"
+                                    if src.get("page") is not None:
+                                        meta_line += f" — 第{src['page']}页"
+                                    meta_line += f" (分块 {src['chunk_index'] + 1})"
+                                    st.markdown(meta_line)
+                                    st.text(src["content_snippet"])
                     else:
-                        st.error(f"查询失败: {resp.json().get('detail', resp.text)}")
-                except httpx.ConnectError:
-                    st.error("无法连接后端，请确认 FastAPI 服务已启动")
+                        st.error(f"查询失败 ({resp.status_code})")
+            except httpx.ConnectError:
+                st.error("无法连接后端，请确认 FastAPI 服务已启动")
