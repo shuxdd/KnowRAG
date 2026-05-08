@@ -19,6 +19,7 @@ class DocumentListResponse(BaseModel):
 class QuestionRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(default=4, ge=1, le=20)
+    session_id: str = Field(default="default")
 
 
 class SourceCitation(BaseModel):
@@ -27,10 +28,21 @@ class SourceCitation(BaseModel):
     content_snippet: str
 
 
+class HistoryMessage(BaseModel):
+    role: str  # "human" | "ai"
+    content: str
+
+
 class AnswerResponse(BaseModel):
     question: str
     answer: str
     sources: list[SourceCitation]
+    session_id: str = "default"
+
+
+class SessionHistory(BaseModel):
+    session_id: str
+    messages: list[HistoryMessage]
 
 
 class HealthResponse(BaseModel):

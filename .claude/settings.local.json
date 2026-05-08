@@ -12,7 +12,9 @@
       "Bash(curl -s -X POST http://localhost:8000/api/documents/upload -F \"file=@data/uploads/test_knowledge.md\")",
       "Bash(curl *)",
       "Bash(HF_ENDPOINT=https://hf-mirror.com .venv/Scripts/uvicorn backend.main:app --host 0.0.0.0 --port 8000)",
-      "Bash(.venv/Scripts/python -c ' *)"
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(HF_ENDPOINT=https://hf-mirror.com .venv/Scripts/uvicorn backend.main:app --port 8000)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/qa_service.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
