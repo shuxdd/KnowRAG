@@ -4,7 +4,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
 from backend.config import settings
-from backend.services.vector_service import get_retriever
+from backend.services.vector_service import get_hybrid_retriever
 from backend.models.schemas import AnswerResponse, SourceCitation
 
 RAG_SYSTEM_PROMPT = """你是一个专业的知识库问答助手。请根据提供的文档片段回答问题。
@@ -58,7 +58,7 @@ def build_rag_chain(retriever):
 
 
 async def ask_question(question: str, top_k: int = 4) -> AnswerResponse:
-    retriever = get_retriever(top_k)
+    retriever = get_hybrid_retriever(top_k)
     chain = build_rag_chain(retriever)
 
     answer = await chain.ainvoke(question)
