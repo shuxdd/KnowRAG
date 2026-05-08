@@ -1,6 +1,7 @@
 import os
 
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
 from contextlib import asynccontextmanager
 
@@ -10,13 +11,17 @@ from fastapi.responses import JSONResponse
 
 from backend.routers import documents, qa
 from backend.services.vector_service import get_document_count, get_embeddings
+from backend.services.reranker import Reranker
 from backend.models.schemas import HealthResponse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # startup: preload embeddings and vector store
     get_embeddings()
+    print("✓ Embedding model loaded")
+    reranker = Reranker()
+    reranker._load()
+    print("✓ Reranker model loaded")
     get_document_count()
     yield
 

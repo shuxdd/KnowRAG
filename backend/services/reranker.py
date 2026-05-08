@@ -10,7 +10,7 @@ class Reranker:
     """Cross-encoder reranker using BGE-reranker-v2-m3 via sentence_transformers."""
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3"):
-        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        os.environ["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
         self.model_name = model_name
         self._model = None
 

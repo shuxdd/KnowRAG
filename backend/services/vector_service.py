@@ -21,7 +21,7 @@ _bm25_retriever: BM25Retriever | None = None
 def get_embeddings() -> HuggingFaceEmbeddings:
     global _embeddings
     if _embeddings is None:
-        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        os.environ["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
         _embeddings = HuggingFaceEmbeddings(
             model_name=settings.embedding_model,
             model_kwargs={"device": settings.embedding_device},
