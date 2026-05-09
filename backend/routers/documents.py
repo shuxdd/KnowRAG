@@ -1,75 +1,69 @@
 import os
-import uuid
 from datetime import datetime
-from pathlib import Path
-
 from fastapi import APIRouter, UploadFile, File, HTTPException
-
-from backend.config import settings
-from backend.services.document_service import load_and_split_document
-from backend.services.vector_service import add_documents, list_documents, delete_document
-from backend.models.schemas import DocumentResponse, DocumentListResponse
+from backend.models.schemas import (
+    UploadResponse,
+    DocumentListResponse,
+    DocumentInfo,
+)
+from backend.services.document_service import document_service
+from backend.services.vector_service import vector_service
+from backend.utils.file_utils import validate_file
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 
-@router.post("/upload", response_model=DocumentResponse)
+@router.post("/upload", response_model=UploadResponse)
 async def upload_document(file: UploadFile = File(...)):
-    original_name = file.filename or "unknown"
-    ext = Path(original_name).suffix.lower()
-    if ext not in settings.supported_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的文件类型：{ext}，支持：{settings.supported_extensions}",
-        )
-
+    validate_file(file)
     content = await file.read()
-    if len(content) > settings.max_upload_size_mb * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="文件大小超出限制")
 
-    upload_dir = Path(settings.upload_dir)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    saved_name = f"{uuid.uuid4().hex}_{original_name}"
-    saved_path = upload_dir / saved_name
-    saved_path.write_bytes(content)
+    filepath = document_service.save_upload(content, file.filename)
+    doc_id = document_service.process_file(filepath, file.filename)
 
-    try:
-        chunks, doc_id = load_and_split_document(str(saved_path), ext)
-    except ValueError as e:
-        saved_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail=str(e))
-
-    doc_response = DocumentResponse(
-        doc_id=doc_id,
-        filename=original_name,
-        file_type=ext,
-        chunk_count=len(chunks),
-        uploaded_at=datetime.now(),
-        size_bytes=len(content),
+    collection_results = vector_service.collection.get(
+        where={"filename": file.filename}
     )
-    add_documents(chunks, doc_response)
+    chunks_count = len(collection_results["ids"]) if collection_results["ids"] else 0
 
-    return doc_response
+    return UploadResponse(
+        doc_id=doc_id,
+        filename=file.filename,
+        chunks_count=chunks_count,
+    )
 
 
 @router.get("", response_model=DocumentListResponse)
-async def get_documents():
-    docs = list_documents()
-    return DocumentListResponse(documents=docs, total=len(docs))
+async def list_documents():
+    stats = vector_service.get_document_stats()
+    documents = []
+    for s in stats:
+        filename = s["filename"]
+        file_size = 0
+        for f in os.listdir("data/uploads"):
+            if f.endswith("_" + filename):
+                filepath = os.path.join("data/uploads", f)
+                file_size = os.path.getsize(filepath)
+                break
+        documents.append(
+            DocumentInfo(
+                doc_id=s.get("filename", ""),
+                filename=filename,
+                file_size=file_size,
+                chunks_count=s["chunks_count"],
+                uploaded_at=datetime.now().isoformat(),
+            )
+        )
+    return DocumentListResponse(documents=documents)
 
 
-@router.delete("/{doc_id}")
-async def remove_document(doc_id: str):
-    from backend.services.vector_service import _doc_registry
-
-    if doc_id not in _doc_registry:
-        raise HTTPException(status_code=404, detail="文档不存在")
-    delete_document(doc_id)
-
-    # clean up uploaded file
-    upload_dir = Path(settings.upload_dir)
-    for f in upload_dir.iterdir():
-        if doc_id in f.name:
-            f.unlink(missing_ok=True)
-
-    return {"status": "deleted", "doc_id": doc_id}
+@router.delete("/{doc_id:path}")
+async def delete_document(doc_id: str):
+    deleted = vector_service.delete_by_filename(doc_id)
+    for f in os.listdir("data/uploads"):
+        if f.endswith("_" + doc_id):
+            os.remove(os.path.join("data/uploads", f))
+            break
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"detail": f"Deleted {deleted} chunks"}
