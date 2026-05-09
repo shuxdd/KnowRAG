@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     # Qwen LLM
     qwen_api_key: str
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwen_model: str = "qwen-turbo"
+    qwen_model: str = "qwen3-max"
 
     # Embedding
     embedding_model: str = "BAAI/bge-small-zh-v1.5"

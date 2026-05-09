@@ -14,7 +14,26 @@
       "Bash(HF_ENDPOINT=https://hf-mirror.com .venv/Scripts/uvicorn backend.main:app --host 0.0.0.0 --port 8000)",
       "Bash(.venv/Scripts/python -c ' *)",
       "Bash(HF_ENDPOINT=https://hf-mirror.com .venv/Scripts/uvicorn backend.main:app --port 8000)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/qa_service.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/qa_service.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"from backend.services.eval_service import _get_judge_llm, _get_eval_embeddings; print\\('eval_service OK'\\); from backend.routers.eval import router; print\\('eval router OK'\\); from backend.models.eval_schemas import EvalRunRequest; print\\('schemas OK'\\)\")",
+      "Bash(python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000)",
+      "Bash(taskkill /F /IM python.exe /FI \"WINDOWTITLE eq *uvicorn*\")",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(python -c \"import subprocess; subprocess.run\\(['taskkill', '/F', '/PID', str\\(subprocess.run\\(['netstat', '-ano'], capture_output=True, text=True\\).stdout.split\\('0.0.0.0:8000'\\)]\\)\")",
+      "Bash(python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload)",
+      "Bash(python -c \"from ragas.metrics import Faithfulness, AnswerCorrectness, ContextPrecision, ContextRecall; print\\('metrics OK'\\)\")",
+      "Bash(python -c \"from ragas.dataset_schema import SingleTurnSample; print\\('SingleTurnSample OK'\\)\")",
+      "Bash(python -c \"from ragas.llms import LangchainLLMWrapper; print\\('LangchainLLMWrapper OK'\\)\")",
+      "Bash(python -c \"from ragas.embeddings import LangchainEmbeddingsWrapper; print\\('LangchainEmbeddingsWrapper OK'\\)\")",
+      "Bash(python -c \"from ragas import evaluate; print\\('evaluate OK'\\)\")",
+      "Bash(python *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true
   }
 }
