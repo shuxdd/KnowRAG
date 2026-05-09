@@ -1,66 +1,59 @@
+import os
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-
-from langchain_community.document_loaders import (
-    PyPDFLoader,
-    TextLoader,
-    Docx2txtLoader,
-)
+from typing import List
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from backend.config import get_settings
+from backend.services.vector_service import vector_service
 
-from backend.config import settings
-
-LOADER_MAP = {
-    ".pdf": PyPDFLoader,
-    ".txt": TextLoader,
-    ".md": TextLoader,
-    ".docx": Docx2txtLoader,
-}
-
-CHINESE_SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""]
+settings = get_settings()
 
 
-def get_loader_class(file_type: str):
-    loader_cls = LOADER_MAP.get(file_type.lower())
-    if loader_cls is None:
-        raise ValueError(f"不支持的文件类型: {file_type}，支持的格式: {list(LOADER_MAP.keys())}")
-    return loader_cls
+class DocumentService:
+    def __init__(self):
+        self.splitter = RecursiveCharacterTextSplitter(
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            separators=["\n\n", "\n", "。", ".", " ", ""],
+        )
+
+    def process_file(self, filepath: str, filename: str) -> str:
+        ext = os.path.splitext(filename)[1].lower()
+        ext = ".txt" if ext == ".md" else ext
+
+        if ext == ".pdf":
+            loader = PyPDFLoader(filepath)
+        elif ext == ".docx":
+            loader = Docx2txtLoader(filepath)
+        elif ext == ".txt":
+            loader = TextLoader(filepath, encoding="utf-8")
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
+
+        raw_docs = loader.load()
+        chunks = self.splitter.split_documents(raw_docs)
+
+        for i, chunk in enumerate(chunks):
+            chunk.metadata["filename"] = filename
+            chunk.metadata["chunk_index"] = i
+            chunk.metadata["source"] = filename
+            if "page" not in chunk.metadata:
+                chunk.metadata["page"] = 0
+
+        doc_ids = vector_service.add_documents(chunks)
+        return doc_ids[0] if doc_ids else ""
+
+    def save_upload(self, file_content: bytes, filename: str) -> str:
+        os.makedirs(settings.upload_dir, exist_ok=True)
+        unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        filepath = os.path.join(settings.upload_dir, unique_name)
+        with open(filepath, "wb") as f:
+            f.write(file_content)
+        return filepath
+
+    def get_file_size(self, filepath: str) -> int:
+        return os.path.getsize(filepath)
 
 
-def load_and_split_document(file_path: str, file_type: str) -> tuple[list, str]:
-    doc_id = uuid.uuid4().hex[:12]
-    filename = Path(file_path).name
-    created_at = datetime.now(timezone.utc).isoformat()
-
-    loader_cls = get_loader_class(file_type)
-    if loader_cls is TextLoader:
-        loader = loader_cls(file_path, encoding="utf-8")
-    else:
-        loader = loader_cls(file_path)
-    raw_docs = loader.load()
-
-    if not raw_docs:
-        raise ValueError(f"文档内容为空: {filename}")
-
-    # inject doc-level metadata to every page/segment before splitting
-    for doc in raw_docs:
-        doc.metadata["doc_id"] = doc_id
-        doc.metadata["filename"] = filename
-        doc.metadata["file_type"] = file_type
-        doc.metadata["created_at"] = created_at
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-        separators=CHINESE_SEPARATORS,
-    )
-    chunks = splitter.split_documents(raw_docs)
-    total = len(chunks)
-
-    for i, chunk in enumerate(chunks):
-        chunk.metadata["chunk_index"] = i
-        chunk.metadata["total_chunks"] = total
-        chunk.metadata["chunk_id"] = f"{doc_id}_chunk_{i}"
-
-    return chunks, doc_id
+document_service = DocumentService()
