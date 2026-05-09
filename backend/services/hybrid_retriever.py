@@ -1,65 +1,64 @@
-import hashlib
-from collections import defaultdict
-
+from typing import List
+from rank_bm25 import BM25Okapi
 from langchain_core.documents import Document
-from langchain_core.retrievers import BaseRetriever
-from langchain_community.retrievers import BM25Retriever
+from backend.services.vector_service import vector_service
+from backend.services.reranker import reranker
 
 
-def _content_id(doc: Document) -> str:
-    """Stable identity for deduplication across retrievers."""
-    return hashlib.md5(doc.page_content.encode()).hexdigest()
+class HybridRetriever:
+    def __init__(self):
+        self._bm25 = None
+        self._corpus_texts: List[str] = []
+        self._corpus_docs: List[Document] = []
+
+    def _ensure_bm25(self):
+        all_docs = vector_service.get_all_chunks()
+        if not all_docs:
+            return
+        current_ids = {d.metadata.get("doc_id", "") for d in all_docs}
+        cached_ids = {d.metadata.get("doc_id", "") for d in self._corpus_docs}
+        if current_ids != cached_ids or not self._bm25:
+            self._corpus_docs = all_docs
+            self._corpus_texts = [d.page_content for d in all_docs]
+            if self._corpus_texts:
+                tokenized = [text.split() for text in self._corpus_texts]
+                self._bm25 = BM25Okapi(tokenized)
+
+    def vector_search(self, query: str, top_k: int = 10) -> List[Document]:
+        return vector_service.similarity_search(query, k=top_k)
+
+    def _dedup_docs(self, docs: List[Document]) -> List[Document]:
+        seen = set()
+        unique = []
+        for doc in docs:
+            key = doc.page_content[:100]
+            if key not in seen:
+                seen.add(key)
+                unique.append(doc)
+        return unique
+
+    def hybrid_search(self, query: str, top_k: int = 10) -> List[Document]:
+        vector_docs = vector_service.similarity_search(query, k=top_k)
+        self._ensure_bm25()
+        bm25_docs = []
+        if self._bm25:
+            tokenized_query = query.split()
+            bm25_scores = self._bm25.get_scores(tokenized_query)
+            scored = sorted(
+                zip(self._corpus_docs, bm25_scores),
+                key=lambda x: x[1],
+                reverse=True,
+            )[:top_k]
+            for doc, score in scored:
+                doc.metadata["score"] = float(score)
+                bm25_docs.append(doc)
+        return self._dedup_docs(vector_docs + bm25_docs)[:top_k]
+
+    def hybrid_search_with_rerank(
+        self, query: str, top_k: int = 10, top_n: int = 5
+    ) -> List[Document]:
+        candidates = self.hybrid_search(query, top_k=top_k)
+        return reranker.rerank(query, candidates, top_n=top_n)
 
 
-def rrf_fusion(results_a: list[Document], results_b: list[Document], k: int = 60, top_n: int = 4) -> list[Document]:
-    """Reciprocal Rank Fusion: merge two ranked lists into one."""
-    scores: dict[str, float] = defaultdict(float)
-    doc_map: dict[str, Document] = {}
-
-    for rank, doc in enumerate(results_a):
-        cid = _content_id(doc)
-        scores[cid] += 1.0 / (k + rank + 1)
-        doc_map[cid] = doc
-
-    for rank, doc in enumerate(results_b):
-        cid = _content_id(doc)
-        scores[cid] += 1.0 / (k + rank + 1)
-        doc_map[cid] = doc
-
-    sorted_ids = sorted(scores, key=scores.get, reverse=True)
-    return [doc_map[cid] for cid in sorted_ids[:top_n]]
-
-
-class HybridRetriever(BaseRetriever):
-    """Combines vector similarity (dense) and BM25 (sparse) via RRF."""
-
-    vector_retriever: BaseRetriever
-    bm25_retriever: BM25Retriever
-    rrf_k: int = 60
-    fetch_k: int = 0  # how many to fetch from each, 0 = same as top_n
-
-    def _get_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
-        fetch_k = self.fetch_k or self.vector_retriever.search_kwargs.get("k", 4) * 2
-
-        # temporarily widen vector k to fetch more candidates
-        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
-        self.vector_retriever.search_kwargs["k"] = fetch_k
-        vec_docs = self.vector_retriever.invoke(query)
-        self.vector_retriever.search_kwargs["k"] = orig_k
-
-        bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
-
-        top_n = orig_k
-        return rrf_fusion(vec_docs, bm25_docs, k=self.rrf_k, top_n=top_n)
-
-    async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
-        fetch_k = self.fetch_k or self.vector_retriever.search_kwargs.get("k", 4) * 2
-
-        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
-        self.vector_retriever.search_kwargs["k"] = fetch_k
-        vec_docs = await self.vector_retriever.ainvoke(query)
-        self.vector_retriever.search_kwargs["k"] = orig_k
-
-        bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
-
-        return rrf_fusion(vec_docs, bm25_docs, k=self.rrf_k, top_n=orig_k)
+hybrid_retriever = HybridRetriever()
