@@ -8,9 +8,6 @@ from backend.config import get_settings
 
 settings = get_settings()
 
-# Set HF mirror before downloading models
-os.environ.setdefault("HF_ENDPOINT", settings.hf_endpoint)
-
 
 class VectorService:
     def __init__(self):

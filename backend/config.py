@@ -1,3 +1,8 @@
+import os
+
+# HuggingFace 镜像必须在任何模型加载前设置
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
