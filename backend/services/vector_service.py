@@ -1,4 +1,8 @@
 import os
+
+# 必须在 chromadb 导入前设置，因为 chromadb 会触发 huggingface_hub 读环境变量
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 import uuid
 from typing import List
 from chromadb import PersistentClient
