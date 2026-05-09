@@ -1,147 +1,92 @@
 import os
-from datetime import datetime
-from pathlib import Path
-
-from langchain_chroma import Chroma
-from langchain_community.retrievers import BM25Retriever
+import uuid
+from typing import List
+from chromadb import PersistentClient
+from chromadb.utils import embedding_functions
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from backend.config import get_settings
 
-from backend.config import settings
-from backend.models.schemas import DocumentResponse
-from backend.services.hybrid_retriever import HybridRetriever
-
-_embeddings = None
-_vector_store = None
-_doc_registry: dict[str, DocumentResponse] = {}
-_bm25_corpus: list[Document] = []
-_bm25_retriever: BM25Retriever | None = None
+settings = get_settings()
 
 
-def get_embeddings() -> HuggingFaceEmbeddings:
-    global _embeddings
-    if _embeddings is None:
-        os.environ["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
-        _embeddings = HuggingFaceEmbeddings(
+class VectorService:
+    def __init__(self):
+        os.makedirs(settings.chroma_persist_dir, exist_ok=True)
+        self.client = PersistentClient(path=settings.chroma_persist_dir)
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=settings.embedding_model,
-            model_kwargs={"device": settings.embedding_device},
-            encode_kwargs={"normalize_embeddings": True},
+            device=settings.embedding_device,
         )
-    return _embeddings
-
-
-def get_vector_store() -> Chroma:
-    global _vector_store
-    if _vector_store is None:
-        persist_dir = str(Path(settings.chroma_persist_dir).resolve())
-        _vector_store = Chroma(
-            collection_name="knowrag_documents",
-            embedding_function=get_embeddings(),
-            persist_directory=persist_dir,
+        self.collection = self.client.get_or_create_collection(
+            name=settings.chroma_collection,
+            embedding_function=self.embedding_fn,
+            metadata={"hnsw:space": "cosine"},
         )
-        _rebuild_registry()
-    return _vector_store
 
-
-def _rebuild_bm25_retriever() -> None:
-    global _bm25_retriever, _bm25_corpus
-    if _bm25_corpus:
-        _bm25_retriever = BM25Retriever.from_documents(_bm25_corpus)
-    else:
-        _bm25_retriever = None
-
-
-def _rebuild_registry():
-    """Rebuild in-memory document registry and BM25 corpus from ChromaDB."""
-    global _doc_registry, _bm25_corpus
-    _doc_registry.clear()
-    _bm25_corpus.clear()
-    try:
-        store = Chroma(
-            collection_name="knowrag_documents",
-            embedding_function=get_embeddings(),
-            persist_directory=str(Path(settings.chroma_persist_dir).resolve()),
+    def add_documents(self, docs: List[Document]) -> List[str]:
+        ids = [str(uuid.uuid4()) for _ in docs]
+        self.collection.add(
+            ids=ids,
+            documents=[doc.page_content for doc in docs],
+            metadatas=[doc.metadata for doc in docs],
         )
-        results = store.get(include=["documents", "metadatas"])
-        if not results or not results["ids"]:
-            return
-        seen = set()
-        for id_, meta, doc_text in zip(results["ids"], results["metadatas"], results["documents"]):
-            doc_id = meta.get("doc_id")
-            if doc_id and doc_id not in seen:
-                seen.add(doc_id)
-                _doc_registry[doc_id] = DocumentResponse(
-                    doc_id=doc_id,
-                    filename=meta.get("filename", "unknown"),
-                    file_type=meta.get("file_type", "unknown"),
-                    chunk_count=sum(
-                        1 for m in results["metadatas"] if m.get("doc_id") == doc_id
-                    ),
-                    uploaded_at=datetime.now(),
-                    size_bytes=0,
+        return ids
+
+    def similarity_search(self, query: str, k: int = 10) -> List[Document]:
+        results = self.collection.query(query_texts=[query], n_results=k)
+        docs = []
+        if results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                distance = results["distances"][0][i] if results["distances"] else 0.0
+                score = 1.0 - (distance / 2.0)
+                docs.append(
+                    Document(
+                        page_content=results["documents"][0][i],
+                        metadata={
+                            **metadata,
+                            "doc_id": doc_id,
+                            "score": max(0.0, min(1.0, score)),
+                        },
+                    )
                 )
-            _bm25_corpus.append(Document(page_content=doc_text or "", metadata=meta))
-        _rebuild_bm25_retriever()
-    except Exception:
-        pass
+        return docs
 
-
-def add_documents(documents: list, doc_response: DocumentResponse) -> list[str]:
-    global _bm25_corpus
-    store = get_vector_store()
-    ids = store.add_documents(documents)
-    _doc_registry[doc_response.doc_id] = doc_response
-    _bm25_corpus.extend(documents)
-    _rebuild_bm25_retriever()
-    return ids
-
-
-def delete_document(doc_id: str) -> None:
-    global _bm25_corpus
-    store = get_vector_store()
-    collection = store._collection
-    results = collection.get(where={"doc_id": doc_id})
-    if results["ids"]:
-        collection.delete(ids=results["ids"])
-    _doc_registry.pop(doc_id, None)
-    _bm25_corpus = [d for d in _bm25_corpus if d.metadata.get("doc_id") != doc_id]
-    _rebuild_bm25_retriever()
-
-
-def list_documents() -> list[DocumentResponse]:
-    return list(_doc_registry.values())
-
-
-def get_document(doc_id: str) -> DocumentResponse | None:
-    return _doc_registry.get(doc_id)
-
-
-def get_retriever(top_k: int = 4):
-    store = get_vector_store()
-    return store.as_retriever(search_kwargs={"k": top_k})
-
-
-def get_hybrid_retriever(top_k: int = 4):
-    """Hybrid retriever: vector + BM25 via Reciprocal Rank Fusion.
-
-    Falls back to vector-only if the BM25 corpus is empty.
-    """
-    global _bm25_retriever
-    if _bm25_retriever is None:
-        return get_retriever(top_k)
-
-    vector_retriever = get_vector_store().as_retriever(search_kwargs={"k": top_k})
-    return HybridRetriever(
-        vector_retriever=vector_retriever,
-        bm25_retriever=_bm25_retriever,
-        rrf_k=60,
-        fetch_k=0,
-    )
-
-
-def get_document_count() -> int:
-    try:
-        store = get_vector_store()
-        return store._collection.count()
-    except Exception:
+    def delete_by_filename(self, filename: str) -> int:
+        results = self.collection.get(where={"filename": filename})
+        if results["ids"]:
+            self.collection.delete(ids=results["ids"])
+            return len(results["ids"])
         return 0
+
+    def get_document_stats(self) -> List[dict]:
+        results = self.collection.get()
+        if not results["metadatas"]:
+            return []
+        stats = {}
+        for meta in results["metadatas"]:
+            fn = meta.get("filename", "unknown")
+            if fn not in stats:
+                stats[fn] = {"filename": fn, "chunks_count": 0}
+            stats[fn]["chunks_count"] += 1
+        return list(stats.values())
+
+    def get_all_chunks(self) -> List[Document]:
+        results = self.collection.get()
+        if not results["ids"]:
+            return []
+        docs = []
+        for i, doc_id in enumerate(results["ids"]):
+            docs.append(
+                Document(
+                    page_content=results["documents"][i],
+                    metadata=results["metadatas"][i] if results["metadatas"] else {},
+                )
+            )
+        return docs
+
+    def count(self) -> int:
+        return self.collection.count()
+
+
+vector_service = VectorService()
