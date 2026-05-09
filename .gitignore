@@ -1,16 +1,10 @@
+# Data directory
+data/
+
 # Virtual environment
 .venv/
 venv/
 env/
-
-# Vector database (large binary files)
-data/chroma/
-
-# Uploaded documents
-data/uploads/*
-
-# Keep the directory structure
-!data/uploads/.gitkeep
 
 # Python cache
 __pycache__/
@@ -29,6 +23,9 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node
+node_modules/
 
 # Streamlit
 .streamlit/secrets.toml
