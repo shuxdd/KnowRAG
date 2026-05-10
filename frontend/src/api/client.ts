@@ -87,3 +87,112 @@ export async function searchDocuments(
   })
   return data
 }
+
+// === V2: Session types ===
+
+export interface SessionInfo {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface SessionListResponse {
+  sessions: SessionInfo[]
+}
+
+export interface MessageInfo {
+  role: string
+  content: string
+  sources: Source[] | null
+  created_at: string
+}
+
+export interface SessionDetailResponse {
+  id: string
+  title: string
+  messages: MessageInfo[]
+}
+
+// === V2: SSE streaming ===
+
+export interface SSEEvent {
+  type: 'sources' | 'token' | 'done'
+  data: string | Source[]
+}
+
+export async function askQuestionStream(
+  question: string,
+  sessionId: string | null,
+  strategy: string,
+  topK: number,
+  onToken: (token: string) => void,
+  onSources: (sources: Source[]) => void,
+  onDone: (newSessionId: string) => void,
+  onError: (error: Error) => void,
+): Promise<void> {
+  try {
+    const response = await fetch('/api/qa/ask/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        strategy,
+        top_k: topK,
+        session_id: sessionId,
+      }),
+    })
+
+    const newSessionId = response.headers.get('X-Session-Id')
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('No response body')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event: SSEEvent = JSON.parse(line.slice(6))
+            if (event.type === 'token') {
+              onToken(event.data as string)
+            } else if (event.type === 'sources') {
+              onSources(event.data as Source[])
+            } else if (event.type === 'done') {
+              if (newSessionId) onDone(newSessionId)
+            }
+          } catch {
+            // skip parse errors for partial chunks
+          }
+        }
+      }
+    }
+  } catch (err) {
+    onError(err as Error)
+  }
+}
+
+// === V2: Session API ===
+
+export async function listSessions(): Promise<SessionListResponse> {
+  const { data } = await api.get<SessionListResponse>('/qa/sessions')
+  return data
+}
+
+export async function getSession(sessionId: string): Promise<SessionDetailResponse> {
+  const { data } = await api.get<SessionDetailResponse>(`/qa/sessions/${sessionId}`)
+  return data
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await api.delete(`/qa/sessions/${sessionId}`)
+}
