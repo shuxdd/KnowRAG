@@ -83,3 +83,53 @@ class SessionDetailResponse(BaseModel):
     id: str
     title: str
     messages: list[MessageInfo]
+
+
+# === V3: Evaluation models ===
+
+class EvalRunRequest(BaseModel):
+    strategy: Literal["all", "vector", "hybrid", "hybrid_rerank"] = "all"
+
+
+class EvalRunInfo(BaseModel):
+    id: str
+    strategy: str
+    dataset_name: str
+    question_count: int
+    started_at: str
+    completed_at: Optional[str] = None
+    avg_faithfulness: Optional[float] = None
+    avg_context_recall: Optional[float] = None
+    avg_context_precision: Optional[float] = None
+    avg_answer_correctness: Optional[float] = None
+    avg_answer_accuracy: Optional[float] = None
+
+
+class EvalResultItem(BaseModel):
+    question: str
+    ground_truth: str
+    answer: str
+    contexts: list[str]
+    faithfulness: Optional[float] = None
+    context_recall: Optional[float] = None
+    context_precision: Optional[float] = None
+    answer_correctness: Optional[float] = None
+    answer_accuracy: Optional[float] = None
+
+
+class EvalRunDetail(BaseModel):
+    id: str
+    strategy: str
+    dataset_name: str
+    started_at: str
+    completed_at: Optional[str] = None
+    avg_faithfulness: Optional[float] = None
+    avg_context_recall: Optional[float] = None
+    avg_context_precision: Optional[float] = None
+    avg_answer_correctness: Optional[float] = None
+    avg_answer_accuracy: Optional[float] = None
+    results: list[EvalResultItem]
+
+
+class EvalListResponse(BaseModel):
+    runs: list[EvalRunInfo]

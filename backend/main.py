@@ -1,6 +1,9 @@
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import documents, qa
+from backend.routers import documents, qa, eval
 
 app = FastAPI(
     title="KnowRAG - Enterprise Knowledge Base",
@@ -18,6 +21,7 @@ app.add_middleware(
 
 app.include_router(documents.router)
 app.include_router(qa.router)
+app.include_router(eval.router)
 
 
 @app.get("/api/health")
