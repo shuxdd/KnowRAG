@@ -196,3 +196,56 @@ export async function getSession(sessionId: string): Promise<SessionDetailRespon
 export async function deleteSession(sessionId: string): Promise<void> {
   await api.delete(`/qa/sessions/${sessionId}`)
 }
+
+// === V3: Evaluation types ===
+
+export interface EvalRunInfo {
+  id: string
+  strategy: string
+  dataset_name: string
+  question_count: number
+  started_at: string
+  completed_at: string | null
+  avg_faithfulness: number | null
+  avg_context_recall: number | null
+  avg_context_precision: number | null
+  avg_answer_correctness: number | null
+  avg_answer_accuracy: number | null
+}
+
+export interface EvalResultItem {
+  question: string
+  ground_truth: string
+  answer: string
+  contexts: string[]
+  faithfulness: number | null
+  context_recall: number | null
+  context_precision: number | null
+  answer_correctness: number | null
+  answer_accuracy: number | null
+}
+
+export interface EvalRunDetail extends EvalRunInfo {
+  results: EvalResultItem[]
+}
+
+export interface EvalListResponse {
+  runs: EvalRunInfo[]
+}
+
+// === V3: Evaluation API ===
+
+export async function listEvalRuns(): Promise<EvalListResponse> {
+  const { data } = await api.get<EvalListResponse>('/eval/results')
+  return data
+}
+
+export async function getEvalRun(runId: string): Promise<EvalRunDetail> {
+  const { data } = await api.get<EvalRunDetail>(`/eval/results/${runId}`)
+  return data
+}
+
+export async function triggerEval(strategy: string = 'all'): Promise<{ run_id: string }> {
+  const { data } = await api.post<{ run_id: string }>('/eval/run', { strategy })
+  return data
+}
