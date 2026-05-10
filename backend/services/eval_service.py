@@ -3,13 +3,11 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from typing import List
 
-from openai import OpenAI
 from ragas import evaluate
 from ragas.dataset_schema import SingleTurnSample, EvaluationDataset
 from ragas.llms import llm_factory
-from ragas.metrics import (
+from ragas.metrics.collections import (
     faithfulness, context_recall, context_precision, answer_correctness,
 )
 from langchain_openai import ChatOpenAI
@@ -56,10 +54,16 @@ class EvalService:
                     FOREIGN KEY (run_id) REFERENCES eval_runs(id)
                 );
             """)
+            conn.execute("PRAGMA journal_mode=WAL")
 
     def load_dataset(self, path: str = "data/test_qa_pairs.json") -> list[dict]:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"QA dataset not found at {path}. Create the file or specify a different path.")
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(f"Invalid JSON in {path}: {e.msg}", e.doc, e.pos)
 
     def run_evaluation(self, strategy: str = "all", limit: int = 0) -> str:
         """Run evaluation. strategy: all | vector | hybrid | hybrid_rerank. limit: 0=all."""
@@ -84,6 +88,7 @@ class EvalService:
         )
 
         # RAGAS-compatible Instructor LLM for metrics evaluation
+        from openai import OpenAI
         _openai_client = OpenAI(
             api_key=settings.qwen_api_key,
             base_url=settings.qwen_base_url,
@@ -143,10 +148,10 @@ class EvalService:
                 ragas_result = evaluate(
                     ds,
                     metrics=[
-                        faithfulness,
-                        context_recall,
-                        context_precision,
-                        answer_correctness,
+                        faithfulness(),
+                        context_recall(),
+                        context_precision(),
+                        answer_correctness(),
                     ],
                     llm=ragas_llm,
                     show_progress=True,
