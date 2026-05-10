@@ -60,6 +60,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         >
           文档管理
         </NavLink>
+        <NavLink
+          to="/eval"
+          style={({ isActive }) => ({
+            ...linkBase,
+            background: isActive ? 'rgba(255,255,255,0.1)' : 'transparent',
+            color: isActive ? '#fff' : 'var(--sidebar-text)',
+          })}
+        >
+          评估报告
+        </NavLink>
       </nav>
       <main style={mainStyle}>{children}</main>
     </div>
