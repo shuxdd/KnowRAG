@@ -22,12 +22,12 @@ Analyze the conversation history and current query, then output a JSON with rewr
 
 ## Output format:
 ```json
-{
+{{
   "original": "<原始查询>",
   "rewritten": "<改写后的单查询，包含扩展词>",
   "sub_queries": ["子查询1", "子查询2"],
   "changes": ["指代消解: X→Y", "扩展: +关键词"]
-}
+}}
 ```
 
 ## Examples:
@@ -36,36 +36,36 @@ History: [用户: "介绍一下LangChain", 助手: "LangChain是..."]
 Query: "它的核心组件有哪些"
 Output:
 ```json
-{
+{{
   "original": "它的核心组件有哪些",
   "rewritten": "LangChain的核心组件有哪些",
   "sub_queries": [],
   "changes": ["指代消解: 它→LangChain"]
-}
+}}
 ```
 
 History: (empty)
 Query: "RAG和传统搜索有什么区别"
 Output:
 ```json
-{
+{{
   "original": "RAG和传统搜索有什么区别",
   "rewritten": "RAG和传统搜索区别对比",
   "sub_queries": ["RAG检索增强生成的原理和流程", "传统搜索技术的原理和特点"],
   "changes": ["分解: 对比问题拆为两个方面"]
-}
+}}
 ```
 
 History: (empty)
 Query: "怎么优化RAG"
 Output:
 ```json
-{
+{{
   "original": "怎么优化RAG",
   "rewritten": "RAG检索增强生成优化方法 提升召回率 提高准确性",
   "sub_queries": [],
   "changes": ["扩展: +提升召回率 +提高准确性"]
-}
+}}
 ```
 
 Conversation history:
