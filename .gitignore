@@ -26,6 +26,7 @@ Thumbs.db
 
 # Node
 node_modules/
+*.tsbuildinfo
 
 # Streamlit
 .streamlit/secrets.toml
