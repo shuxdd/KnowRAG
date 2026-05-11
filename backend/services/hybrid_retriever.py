@@ -41,7 +41,7 @@ class HybridRetriever:
             self._corpus_docs = all_docs
             self._corpus_texts = [d.page_content for d in all_docs]
             if self._corpus_texts:
-                # 对文本进行分词（简单按空格分词）
+                # 对文本进行分词（使用 jieba 中文分词）
                 tokenized = [jieba.lcut(text) for text in self._corpus_texts]
                 self._bm25 = BM25Okapi(tokenized)
 
@@ -90,14 +90,14 @@ class HybridRetriever:
     def hybrid_search(self, query: str, top_k: int = 10) -> List[Document]:
         """
         混合检索策略
-        同时执行向量检索和 BM25 检索，然后将结果简单拼接
+        同时执行向量检索和 BM25 检索，然后使用 RRF 算法融合
 
         Args:
             query: 查询文本
             top_k: 每种检索方法返回的文档数量
 
         Returns:
-            混合检索结果（向量检索结果 + BM25 结果，去重后取前 top_k 个）
+            混合检索结果（通过 RRF 算法融合向量和 BM25 排名，按 RRF 分数降序取前 top_k 个）
         """
         # 1. 向量检索
         vector_docs = vector_service.similarity_search(query, k=top_k)
@@ -119,7 +119,7 @@ class HybridRetriever:
             for doc, score in scored:
                 doc.metadata["score"] = float(score)
                 bm25_docs.append(doc)
-        # 3. 合并两种检索结果（简单拼接后去重）
+        # 3. RRF 融合两种检索结果
         return self._rrf_fusion(vector_docs, bm25_docs, top_k=top_k)
 
     def hybrid_search_with_rerank(
