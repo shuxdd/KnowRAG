@@ -1,4 +1,5 @@
 from typing import List
+import jieba
 from rank_bm25 import BM25Okapi
 from langchain_core.documents import Document
 from backend.services.vector_service import vector_service
@@ -41,7 +42,7 @@ class HybridRetriever:
             self._corpus_texts = [d.page_content for d in all_docs]
             if self._corpus_texts:
                 # 对文本进行分词（简单按空格分词）
-                tokenized = [text.split() for text in self._corpus_texts]
+                tokenized = [jieba.lcut(text) for text in self._corpus_texts]
                 self._bm25 = BM25Okapi(tokenized)
 
     def vector_search(self, query: str, top_k: int = 10) -> List[Document]:
@@ -58,25 +59,33 @@ class HybridRetriever:
         """
         return vector_service.similarity_search(query, k=top_k)
 
-    def _dedup_docs(self, docs: List[Document]) -> List[Document]:
-        """
-        对文档列表进行去重
-        根据文档内容的前100个字符作为唯一标识
+    def _rrf_fusion(
+        self,
+        vector_docs: List[Document],
+        bm25_docs: List[Document],
+        k: int = 60,
+        top_k: int = 10,
+    ) -> List[Document]:
+        scores: dict[str, tuple[float, Document]] = {}
 
-        Args:
-            docs: 原始文档列表（可能包含重复）
-
-        Returns:
-            去重后的文档列表，保留首次出现的文档
-        """
-        seen = set()
-        unique = []
-        for doc in docs:
+        for rank, doc in enumerate(vector_docs):
             key = doc.page_content[:100]
-            if key not in seen:
-                seen.add(key)
-                unique.append(doc)
-        return unique
+            rrf = 1.0 / (k + rank + 1)
+            if key in scores:
+                scores[key] = (scores[key][0] + rrf, scores[key][1])
+            else:
+                scores[key] = (rrf, doc)
+
+        for rank, doc in enumerate(bm25_docs):
+            key = doc.page_content[:100]
+            rrf = 1.0 / (k + rank + 1)
+            if key in scores:
+                scores[key] = (scores[key][0] + rrf, scores[key][1])
+            else:
+                scores[key] = (rrf, doc)
+
+        sorted_docs = sorted(scores.values(), key=lambda x: x[0], reverse=True)
+        return [doc for _, doc in sorted_docs[:top_k]]
 
     def hybrid_search(self, query: str, top_k: int = 10) -> List[Document]:
         """
@@ -97,7 +106,7 @@ class HybridRetriever:
         bm25_docs = []
         if self._bm25:
             # 对查询进行分词
-            tokenized_query = query.split()
+            tokenized_query = jieba.lcut(query)
             # 计算查询与所有文档的 BM25 分数
             bm25_scores = self._bm25.get_scores(tokenized_query)
             # 按分数降序排列
@@ -111,7 +120,7 @@ class HybridRetriever:
                 doc.metadata["score"] = float(score)
                 bm25_docs.append(doc)
         # 3. 合并两种检索结果（简单拼接后去重）
-        return self._dedup_docs(vector_docs + bm25_docs)[:top_k]
+        return self._rrf_fusion(vector_docs, bm25_docs, top_k=top_k)
 
     def hybrid_search_with_rerank(
         self, query: str, top_k: int = 10, top_n: int = 3
