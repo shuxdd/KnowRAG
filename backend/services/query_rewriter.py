@@ -1,6 +1,9 @@
 import json
+import logging
 import re
 from typing import List
+
+logger = logging.getLogger(__name__)
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from backend.config import get_settings
@@ -82,6 +85,7 @@ class QueryRewriter:
             api_key=settings.qwen_api_key,
             base_url=settings.qwen_base_url,
             temperature=0.0,
+            request_timeout=5,
         )
         self.prompt = ChatPromptTemplate.from_template(REWRITE_PROMPT)
 
@@ -105,6 +109,7 @@ class QueryRewriter:
             response = self.llm.invoke(messages)
             return self._parse(response.content, query)
         except Exception:
+            logger.warning("Query rewriting failed, falling back to original query", exc_info=True)
             return {
                 "original": query,
                 "rewritten": query,
@@ -116,8 +121,7 @@ class QueryRewriter:
         """解析 LLM 输出的 JSON，带容错"""
         raw = raw.strip()
         if raw.startswith("```"):
-            raw = re.sub(r"^```\w*\n?", "", raw)
-            raw = re.sub(r"\n```$", "", raw)
+            raw = re.sub(r"```(?:\w*)?\s*([\s\S]*?)\s*```", r"\1", raw).strip()
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
