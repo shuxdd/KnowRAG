@@ -55,6 +55,8 @@ class QAService:
             temperature=0.3,  # 中等随机性，平衡创造性和准确性
         )
         self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        from backend.services.query_rewriter import QueryRewriter
+        self.rewriter = QueryRewriter()
 
     def _build_context(self, docs: List[Document]) -> str:
         """
@@ -109,20 +111,46 @@ class QAService:
             lines.append(f"{role}: {msg.content}")
         return "\n".join(lines)
 
-    def search(self, query: str, strategy: str = "hybrid_rerank", top_k: int = 5) -> List[Document]:
+    def search(self, query: str, strategy: str = "hybrid_rerank", top_k: int = 5, chat_history: str = "") -> List[Document]:
         """
-        根据策略执行文档检索
+        根据策略执行文档检索，支持查询改写
 
         Args:
             query: 查询文本
             strategy: 检索策略（vector/hybrid/hybrid_rerank）
             top_k: 返回的文档数量
+            chat_history: 格式化的对话历史，有历史时触发查询改写
 
         Returns:
             Document 对象列表
         """
+        if chat_history:
+            rewrite_result = self.rewriter.rewrite(query, chat_history)
+            queries = self.rewriter.get_queries(rewrite_result)
+        else:
+            queries = [query]
+
+        if len(queries) == 1:
+            return self._retrieve(queries[0], strategy, top_k)
+        else:
+            return self._multi_query_retrieve(queries, strategy, top_k)
+
+    def _retrieve(self, query: str, strategy: str, top_k: int) -> List[Document]:
+        """执行单次检索（原 search 逻辑）"""
         retriever_fn = self.STRATEGIES.get(strategy, hybrid_retriever.hybrid_search_with_rerank)
         return retriever_fn(query, top_k=top_k)
+
+    def _multi_query_retrieve(self, queries: List[str], strategy: str, top_k: int) -> List[Document]:
+        """多查询检索：每个子查询独立检索，RRF 融合"""
+        all_docs = []
+        for q in queries:
+            docs = self._retrieve(q, strategy, top_k)
+            all_docs.append(docs)
+        return hybrid_retriever._rrf_fusion(
+            all_docs[0],
+            [d for docs in all_docs[1:] for d in docs],
+            top_k=top_k,
+        )
 
     def ask(self, question: str, strategy: str = "hybrid_rerank", top_k: int = 5):
         """
@@ -170,17 +198,22 @@ class QAService:
             - token: LLM 生成的文本片段
             - done: 结束标识
         """
-        # (1) 文档检索
-        docs = self.search(question, strategy, top_k)
-        context = self._build_context(docs) if docs else ""
-
-        # (2) 加载对话历史
+        # (1) 加载对话历史
         history = session_service.get_history(session_id)
         history_text = self._format_history(history.messages)
 
-        # (3) 首包：发送检索到的来源信息
+        # (2) 查询改写 + 文档检索
+        rewrite_result = self.rewriter.rewrite(question, history_text)
+        queries = self.rewriter.get_queries(rewrite_result)
+        if len(queries) == 1:
+            docs = self._retrieve(queries[0], strategy, top_k)
+        else:
+            docs = self._multi_query_retrieve(queries, strategy, top_k)
+        context = self._build_context(docs) if docs else ""
+
+        # (3) 首包：发送检索到的来源信息 + 改写信息
         sources = self._extract_sources(docs)
-        yield f"data: {json.dumps({'type': 'sources', 'data': [s.model_dump() for s in sources]}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'sources', 'data': [s.model_dump() for s in sources], 'rewrite': rewrite_result}, ensure_ascii=False)}\n\n"
 
         # (4) 如果没有检索到文档，直接返回
         if not docs:
