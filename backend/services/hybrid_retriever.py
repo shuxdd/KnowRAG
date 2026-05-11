@@ -59,7 +59,7 @@ class HybridRetriever:
         """
         return vector_service.similarity_search(query, k=top_k)
 
-    def _rrf_fusion(
+    def rrf_fusion(
         self,
         vector_docs: List[Document],
         bm25_docs: List[Document],
@@ -120,7 +120,7 @@ class HybridRetriever:
                 doc.metadata["score"] = float(score)
                 bm25_docs.append(doc)
         # 3. RRF 融合两种检索结果
-        return self._rrf_fusion(vector_docs, bm25_docs, top_k=top_k)
+        return self.rrf_fusion(vector_docs, bm25_docs, top_k=top_k)
 
     def hybrid_search_with_rerank(
         self, query: str, top_k: int = 10, top_n: int = 3

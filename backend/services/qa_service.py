@@ -6,6 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from backend.config import get_settings
 from backend.models.schemas import Source
 from backend.services.hybrid_retriever import hybrid_retriever
+from backend.services.query_rewriter import QueryRewriter
 from backend.services.session_service import session_service
 
 settings = get_settings()
@@ -55,7 +56,6 @@ class QAService:
             temperature=0.3,  # 中等随机性，平衡创造性和准确性
         )
         self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-        from backend.services.query_rewriter import QueryRewriter
         self.rewriter = QueryRewriter()
 
     def _build_context(self, docs: List[Document]) -> str:
@@ -136,7 +136,7 @@ class QAService:
             return self._multi_query_retrieve(queries, strategy, top_k)
 
     def _retrieve(self, query: str, strategy: str, top_k: int) -> List[Document]:
-        """执行单次检索（原 search 逻辑）"""
+        """Execute a single retrieval against the chosen strategy"""
         retriever_fn = self.STRATEGIES.get(strategy, hybrid_retriever.hybrid_search_with_rerank)
         return retriever_fn(query, top_k=top_k)
 
@@ -146,7 +146,7 @@ class QAService:
         for q in queries:
             docs = self._retrieve(q, strategy, top_k)
             all_docs.append(docs)
-        return hybrid_retriever._rrf_fusion(
+        return hybrid_retriever.rrf_fusion(
             all_docs[0],
             [d for docs in all_docs[1:] for d in docs],
             top_k=top_k,
@@ -203,8 +203,12 @@ class QAService:
         history_text = self._format_history(history.messages)
 
         # (2) 查询改写 + 文档检索
-        rewrite_result = self.rewriter.rewrite(question, history_text)
-        queries = self.rewriter.get_queries(rewrite_result)
+        if history.messages:
+            rewrite_result = self.rewriter.rewrite(question, history_text)
+            queries = self.rewriter.get_queries(rewrite_result)
+        else:
+            queries = [question]
+            rewrite_result = {"original": question, "rewritten": question, "sub_queries": [], "changes": []}
         if len(queries) == 1:
             docs = self._retrieve(queries[0], strategy, top_k)
         else:
