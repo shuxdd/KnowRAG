@@ -1,93 +1,159 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
 import {
-  askQuestionStream,
-  listSessions,
-  deleteSession,
-  getSession,
-  Source,
-  SessionInfo,
-  MessageInfo,
+  askQuestionStream, listSessions, deleteSession, getSession,
+  Source, SessionInfo, MessageInfo,
 } from '../api/client'
 
-const pageTitle: React.CSSProperties = {
-  fontSize: 24, fontWeight: 600, marginBottom: 24,
+// ── Styles ──────────────────────────────────────────────
+
+const page: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', height: 'calc(100vh - 88px)',
 }
 
-const layoutStyle: React.CSSProperties = {
-  display: 'flex', gap: 24, height: 'calc(100vh - 120px)',
+const header: React.CSSProperties = {
+  fontSize: 22, fontWeight: 700, marginBottom: 16, color: '#1e293b',
 }
 
-const sidebarStyle: React.CSSProperties = {
-  width: 240, flexShrink: 0, background: 'var(--card-bg)',
-  borderRadius: 12, padding: 16, overflowY: 'auto',
+const shell: React.CSSProperties = {
+  display: 'flex', gap: 16, flex: 1, minHeight: 0,
 }
 
-const sessionItem: React.CSSProperties = {
-  padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
-  fontSize: 14, marginBottom: 4, display: 'flex',
-  justifyContent: 'space-between', alignItems: 'center',
+// Sidebar
+const sidebar: React.CSSProperties = {
+  width: 260, flexShrink: 0, background: '#fff', borderRadius: 12,
+  boxShadow: '0 1px 3px rgba(0,0,0,.06)', display: 'flex', flexDirection: 'column',
+  overflow: 'hidden',
 }
 
-const newChatBtn: React.CSSProperties = {
-  width: '100%', padding: '10px', background: 'var(--primary)',
+const sidebarHead: React.CSSProperties = {
+  padding: '14px 16px', borderBottom: '1px solid #f1f5f9',
+}
+
+const newBtn: React.CSSProperties = {
+  width: '100%', padding: '9px 0', background: 'var(--primary)',
   color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer',
-  fontSize: 14, marginBottom: 12,
+  fontSize: 13, fontWeight: 600, letterSpacing: '.3px',
 }
 
-const chatArea: React.CSSProperties = {
+const sessionList: React.CSSProperties = {
+  flex: 1, overflowY: 'auto', padding: '6px 8px',
+}
+
+const sessionRow = (active: boolean): React.CSSProperties => ({
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+  fontSize: 13, marginBottom: 2,
+  background: active ? '#eef2ff' : 'transparent',
+  fontWeight: active ? 600 : 400,
+  transition: 'background .15s',
+})
+
+const sessionTitle: React.CSSProperties = {
+  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+}
+
+const delBtn: React.CSSProperties = {
+  background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer',
+  fontSize: 14, padding: '0 0 0 8px', lineHeight: 1,
+}
+
+// Chat
+const chat: React.CSSProperties = {
   flex: 1, display: 'flex', flexDirection: 'column',
-  background: 'var(--card-bg)', borderRadius: 12, overflow: 'hidden',
+  background: '#fff', borderRadius: 12,
+  boxShadow: '0 1px 3px rgba(0,0,0,.06)', overflow: 'hidden',
 }
 
-const messagesContainer: React.CSSProperties = {
-  flex: 1, overflowY: 'auto', padding: 20,
+const msgList: React.CSSProperties = {
+  flex: 1, overflowY: 'auto', padding: '20px 24px',
 }
 
-const msgRow: React.CSSProperties = {
-  marginBottom: 16, display: 'flex', flexDirection: 'column',
+const emptyState: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', alignItems: 'center',
+  justifyContent: 'center', height: '100%', color: '#94a3b8',
 }
 
-const userBubble: React.CSSProperties = {
-  alignSelf: 'flex-end', background: 'var(--primary)',
-  color: '#fff', padding: '10px 16px', borderRadius: 12,
-  maxWidth: '70%', fontSize: 14, lineHeight: 1.6,
+// Message bubbles
+const msgWrapper: React.CSSProperties = {
+  marginBottom: 20, display: 'flex', flexDirection: 'column',
 }
 
-const aiBubble: React.CSSProperties = {
-  alignSelf: 'flex-start', background: '#f1f5f9',
-  color: '#1a1a2e', padding: '10px 16px', borderRadius: 12,
-  maxWidth: '85%', fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap',
+const avatar = (isUser: boolean): React.CSSProperties => ({
+  width: 32, height: 32, borderRadius: 8, display: 'flex',
+  alignItems: 'center', justifyContent: 'center',
+  fontSize: 14, fontWeight: 700, flexShrink: 0,
+  background: isUser ? 'var(--primary)' : '#f1f5f9',
+  color: isUser ? '#fff' : '#64748b',
+})
+
+const bubble = (isUser: boolean): React.CSSProperties => ({
+  maxWidth: '78%', padding: '12px 16px', borderRadius: 12,
+  fontSize: 14, lineHeight: 1.7,
+  ...(isUser
+    ? { background: 'var(--primary)', color: '#fff', borderBottomRightRadius: 4 }
+    : { background: '#f8fafc', color: '#1e293b', border: '1px solid #f1f5f9', borderBottomLeftRadius: 4 }
+  ),
+})
+
+const markdownStyles = {
+  p: { margin: '4px 0' } as React.CSSProperties,
+  ul: { paddingLeft: 18, margin: '6px 0' } as React.CSSProperties,
+  ol: { paddingLeft: 18, margin: '6px 0' } as React.CSSProperties,
+  li: { marginBottom: 2 } as React.CSSProperties,
+  strong: { fontWeight: 600 } as React.CSSProperties,
+  code: { background: '#e2e8f0', padding: '1px 5px', borderRadius: 3, fontSize: 12.5 } as React.CSSProperties,
+  pre: { background: '#1e293b', color: '#e2e8f0', padding: '10px 14px', borderRadius: 8, overflowX: 'auto' as const, fontSize: 12.5, margin: '8px 0' } as React.CSSProperties,
+  blockquote: { borderLeft: '3px solid var(--primary)', paddingLeft: 12, color: '#64748b', margin: '8px 0' } as React.CSSProperties,
+  h3: { fontSize: 15, fontWeight: 600, margin: '10px 0 4px' } as React.CSSProperties,
+  h4: { fontSize: 14, fontWeight: 600, margin: '8px 0 4px' } as React.CSSProperties,
 }
 
-const inputArea: React.CSSProperties = {
-  display: 'flex', gap: 8, padding: '16px 20px', borderTop: '1px solid var(--border)',
+// Sources
+const sourceRow: React.CSSProperties = { marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }
+
+const chip = (active: boolean): React.CSSProperties => ({
+  display: 'inline-flex', alignItems: 'center', gap: 4,
+  padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 500,
+  cursor: 'pointer', userSelect: 'none', transition: 'all .15s',
+  background: active ? '#4338ca' : '#eef2ff', color: active ? '#fff' : '#4338ca',
+})
+
+const chipDot: React.CSSProperties = { width: 6, height: 6, borderRadius: 3, background: 'currentColor', opacity: .6 }
+
+const sourcePanel: React.CSSProperties = {
+  marginTop: 8, padding: '10px 14px', background: '#f8fafc',
+  borderRadius: 8, fontSize: 12, color: '#475569', lineHeight: 1.7,
+  whiteSpace: 'pre-wrap', maxHeight: 180, overflowY: 'auto',
+  border: '1px solid #e2e8f0',
 }
 
-const inputStyle: React.CSSProperties = {
-  flex: 1, padding: '10px 14px', borderRadius: 8,
-  border: '1px solid var(--border)', fontSize: 14, outline: 'none',
+// Input
+const inputRow: React.CSSProperties = {
+  display: 'flex', gap: 8, padding: '14px 20px', borderTop: '1px solid #f1f5f9',
+  alignItems: 'center',
 }
 
-const selectStyle: React.CSSProperties = {
-  padding: '10px 14px', borderRadius: 8,
-  border: '1px solid var(--border)', fontSize: 13,
-  background: 'var(--card-bg)', cursor: 'pointer',
+const select: React.CSSProperties = {
+  padding: '9px 12px', borderRadius: 8, border: '1px solid #e2e8f0',
+  fontSize: 12, background: '#f8fafc', cursor: 'pointer', color: '#475569',
+  outline: 'none', flexShrink: 0,
 }
 
-const btnStyle: React.CSSProperties = {
-  padding: '10px 20px', background: 'var(--primary)', color: '#fff',
-  border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 14,
+const inputField: React.CSSProperties = {
+  flex: 1, padding: '9px 14px', borderRadius: 8,
+  border: '1px solid #e2e8f0', fontSize: 14, outline: 'none',
+  background: '#f8fafc', transition: 'border-color .15s',
 }
 
-const deleteBtn: React.CSSProperties = {
-  background: 'none', border: 'none', color: '#ef4444',
-  cursor: 'pointer', fontSize: 12, padding: '2px 6px',
-}
+const sendBtn = (ok: boolean): React.CSSProperties => ({
+  padding: '9px 22px', background: ok ? 'var(--primary)' : '#e2e8f0',
+  color: ok ? '#fff' : '#94a3b8', border: 'none', borderRadius: 8,
+  cursor: ok ? 'pointer' : 'default', fontSize: 13, fontWeight: 600,
+  transition: 'all .15s', flexShrink: 0,
+})
 
-const sourceChip: React.CSSProperties = {
-  display: 'inline-block', background: '#e0e7ff', color: '#4338ca',
-  padding: '2px 8px', borderRadius: 4, fontSize: 11, marginRight: 4, marginTop: 8,
-}
+// ── Components ──────────────────────────────────────────
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -95,196 +161,225 @@ interface ChatMessage {
   sources?: Source[] | null
 }
 
+function SourcesWidget({ msgIdx, sources, expandedKey, onToggle }: {
+  msgIdx: string; sources: Source[]; expandedKey: string | null; onToggle: (k: string | null) => void
+}) {
+  return (
+    <div style={sourceRow}>
+      {sources.map((s, j) => {
+        const key = `${msgIdx}-${j}`
+        const open = expandedKey === key
+        return (
+          <div key={j} style={{ width: '100%' }}>
+            <span style={chip(open)} onClick={() => onToggle(open ? null : key)}>
+              <span style={chipDot} />
+              {s.filename}
+              <span style={{ opacity: .65 }}>{(s.score * 100).toFixed(0)}%</span>
+            </span>
+            {open && <div style={sourcePanel}>{s.content}</div>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Page ────────────────────────────────────────────────
+
 export default function QAPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [activeSid, setActiveSid] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [strategy, setStrategy] = useState('hybrid_rerank')
   const [streaming, setStreaming] = useState(false)
-  const [streamingText, setStreamingText] = useState('')
-  const [streamingSources, setStreamingSources] = useState<Source[]>([])
+  const [streamText, setStreamText] = useState('')
+  const [streamSources, setStreamSources] = useState<Source[]>([])
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   const msgEndRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const loadSessions = useCallback(async () => {
-    try {
-      const res = await listSessions()
-      setSessions(res.sessions)
-    } catch (err) {
-      console.error('Failed to load sessions:', err)
-    }
+    try { const r = await listSessions(); setSessions(r.sessions) } catch { /* */ }
   }, [])
 
-  useEffect(() => {
-    loadSessions()
-  }, [loadSessions])
+  useEffect(() => { loadSessions() }, [loadSessions])
+  useEffect(() => { msgEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streamText])
 
-  useEffect(() => {
-    msgEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamingText])
-
-  const handleSelectSession = async (id: string) => {
-    setActiveSessionId(id)
+  const selectSession = async (id: string) => {
+    setActiveSid(id)
     try {
-      const res = await getSession(id)
-      setMessages(res.messages.map((m: MessageInfo) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        sources: m.sources,
+      const r = await getSession(id)
+      setMessages(r.messages.map((m: MessageInfo) => ({
+        role: m.role as 'user' | 'assistant', content: m.content, sources: m.sources,
       })))
-    } catch (err) {
-      console.error('Failed to load session:', err)
-    }
+    } catch { /* */ }
   }
 
-  const handleNewChat = () => {
-    setActiveSessionId(null)
-    setMessages([])
-    setStreamingText('')
+  const newChat = () => {
+    setActiveSid(null); setMessages([]); setStreamText('')
+    setTimeout(() => inputRef.current?.focus(), 0)
   }
 
-  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
+  const delSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!confirm('Delete this conversation?')) return
+    if (!confirm('删除该对话？')) return
     try {
       await deleteSession(id)
-      if (activeSessionId === id) handleNewChat()
+      if (activeSid === id) newChat()
       await loadSessions()
-    } catch (err) {
-      console.error('Failed to delete:', err)
-    }
+    } catch { /* */ }
   }
 
-  const handleSend = async () => {
+  const send = async () => {
     if (!input.trim() || streaming) return
-    const question = input.trim()
+    const q = input.trim()
     setInput('')
-    setMessages(prev => [...prev, { role: 'user', content: question }])
-    setStreamingText('')
-    setStreamingSources([])
-    setStreaming(true)
+    setMessages(p => [...p, { role: 'user', content: q }])
+    setStreamText(''); setStreamSources([]); setStreaming(true)
 
     await askQuestionStream(
-      question,
-      activeSessionId,
-      strategy,
-      5,
-      (token) => setStreamingText(prev => prev + token),
-      (sources) => setStreamingSources(sources),
-      (newSessionId) => {
-        setStreamingText(prev => {
+      q, activeSid, strategy, 5,
+      (t) => setStreamText(p => p + t),
+      (srcs) => setStreamSources(srcs),
+      (newId) => {
+        setStreamText(prev => {
           setMessages(msgs => [...msgs, {
-            role: 'assistant',
-            content: prev,
-            sources: streamingSources.length > 0 ? streamingSources : null,
+            role: 'assistant', content: prev,
+            sources: streamSources.length > 0 ? streamSources : null,
           }])
           return ''
         })
-        if (!activeSessionId) {
-          setActiveSessionId(newSessionId)
-        }
+        if (!activeSid) setActiveSid(newId)
         setStreaming(false)
         loadSessions()
       },
-      (err) => {
-        console.error('Stream error:', err)
-        alert('问答请求失败: ' + err.message)
-        setStreaming(false)
-      },
+      (err) => { alert('请求失败: ' + err.message); setStreaming(false) },
     )
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
-  return (
-    <div>
-      <h1 style={pageTitle}>智能问答</h1>
-      <div style={layoutStyle}>
-        <div style={sidebarStyle}>
-          <button style={newChatBtn} onClick={handleNewChat}>+ 新对话</button>
-          {sessions.map(s => (
-            <div
-              key={s.id}
-              style={{
-                ...sessionItem,
-                background: s.id === activeSessionId ? '#eef2ff' : 'transparent',
-                fontWeight: s.id === activeSessionId ? 600 : 400,
-              }}
-              onClick={() => handleSelectSession(s.id)}
-            >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                {s.title}
-              </span>
-              <button style={deleteBtn} onClick={(e) => handleDeleteSession(s.id, e)}>
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
+  const hasMessages = messages.length > 0 || streaming
 
-        <div style={chatArea}>
-          <div style={messagesContainer}>
-            {messages.map((msg, i) => (
-              <div key={i} style={msgRow}>
-                {msg.role === 'user' ? (
-                  <div style={userBubble}>{msg.content}</div>
-                ) : (
-                  <div style={aiBubble}>
-                    {msg.content}
-                    {msg.sources && msg.sources.length > 0 && (
-                      <div style={{ marginTop: 8 }}>
-                        {msg.sources.map((s, j) => (
-                          <span key={j} style={sourceChip}>
-                            {s.filename} ({(s.score * 100).toFixed(0)}%)
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+  return (
+    <div style={page}>
+      <h1 style={header}>智能问答</h1>
+
+      <div style={shell}>
+        {/* ── Sidebar ── */}
+        <div style={sidebar}>
+          <div style={sidebarHead}>
+            <button style={newBtn} onClick={newChat}>+ 新对话</button>
+          </div>
+          <div style={sessionList}>
+            {sessions.map(s => (
+              <div key={s.id} style={sessionRow(s.id === activeSid)} onClick={() => selectSession(s.id)}>
+                <span style={sessionTitle}>{s.title}</span>
+                <button style={delBtn} onClick={(e) => delSession(s.id, e)} title="删除">×</button>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* ── Chat ── */}
+        <div style={chat}>
+          <div style={msgList}>
+            {!hasMessages && (
+              <div style={emptyState}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>💬</div>
+                <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>开始新的对话</div>
+                <div style={{ fontSize: 13 }}>输入问题，AI 将基于知识库为你解答</div>
+              </div>
+            )}
+
+            {messages.map((msg, i) => (
+              <div key={i} style={msgWrapper}>
+                <div style={{ display: 'flex', gap: 10, justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                  {msg.role === 'assistant' && <div style={avatar(false)}>AI</div>}
+                  <div style={bubble(msg.role === 'user')}>
+                    {msg.role === 'assistant' ? (
+                      <ReactMarkdown components={{
+                        p: ({ children }) => <p style={markdownStyles.p}>{children}</p>,
+                        ul: ({ children }) => <ul style={markdownStyles.ul}>{children}</ul>,
+                        ol: ({ children }) => <ol style={markdownStyles.ol}>{children}</ol>,
+                        li: ({ children }) => <li style={markdownStyles.li}>{children}</li>,
+                        strong: ({ children }) => <strong style={markdownStyles.strong}>{children}</strong>,
+                        code: ({ children }) => <code style={markdownStyles.code}>{children}</code>,
+                        pre: ({ children }) => <pre style={markdownStyles.pre}>{children}</pre>,
+                        blockquote: ({ children }) => <blockquote style={markdownStyles.blockquote}>{children}</blockquote>,
+                        h3: ({ children }) => <h3 style={markdownStyles.h3}>{children}</h3>,
+                        h4: ({ children }) => <h4 style={markdownStyles.h4}>{children}</h4>,
+                      }}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    ) : (
+                      msg.content
+                    )}
+                    {msg.sources && msg.sources.length > 0 && (
+                      <SourcesWidget msgIdx={String(i)} sources={msg.sources} expandedKey={expanded} onToggle={setExpanded} />
+                    )}
+                  </div>
+                  {msg.role === 'user' && <div style={avatar(true)}>U</div>}
+                </div>
+              </div>
+            ))}
+
+            {/* Streaming bubble */}
             {streaming && (
-              <div style={msgRow}>
-                <div style={aiBubble}>
-                  {streamingText || '思考中...'}
-                  {streamingSources.length > 0 && streamingText.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      {streamingSources.map((s, j) => (
-                        <span key={j} style={sourceChip}>
-                          {s.filename} ({(s.score * 100).toFixed(0)}%)
-                        </span>
-                      ))}
-                    </div>
-                  )}
+              <div style={msgWrapper}>
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-start' }}>
+                  <div style={avatar(false)}>AI</div>
+                  <div style={bubble(false)}>
+                    {streamText ? (
+                      <ReactMarkdown components={{
+                        p: ({ children }) => <p style={markdownStyles.p}>{children}</p>,
+                        ul: ({ children }) => <ul style={markdownStyles.ul}>{children}</ul>,
+                        ol: ({ children }) => <ol style={markdownStyles.ol}>{children}</ol>,
+                        li: ({ children }) => <li style={markdownStyles.li}>{children}</li>,
+                        strong: ({ children }) => <strong style={markdownStyles.strong}>{children}</strong>,
+                        code: ({ children }) => <code style={markdownStyles.code}>{children}</code>,
+                        blockquote: ({ children }) => <blockquote style={markdownStyles.blockquote}>{children}</blockquote>,
+                      }}>
+                        {streamText}
+                      </ReactMarkdown>
+                    ) : (
+                      <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>思考中...</span>
+                    )}
+                    {streamSources.length > 0 && streamText.length > 0 && (
+                      <SourcesWidget msgIdx="stream" sources={streamSources} expandedKey={expanded} onToggle={setExpanded} />
+                    )}
+                  </div>
                 </div>
               </div>
             )}
+
             <div ref={msgEndRef} />
           </div>
 
-          <div style={inputArea}>
-            <select style={selectStyle} value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+          {/* Input */}
+          <div style={inputRow}>
+            <select style={select} value={strategy} onChange={(e) => setStrategy(e.target.value)}>
               <option value="vector">向量检索</option>
               <option value="hybrid">混合检索</option>
-              <option value="hybrid_rerank">混合检索+Rerank</option>
+              <option value="hybrid_rerank">混合回排+Rerank</option>
             </select>
             <input
-              style={inputStyle}
+              ref={inputRef}
+              style={inputField}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
+              onKeyDown={onKey}
               placeholder="输入问题，Enter 发送..."
               disabled={streaming}
+              onFocus={(e) => { e.target.style.borderColor = 'var(--primary)'; e.target.style.background = '#fff' }}
+              onBlur={(e) => { e.target.style.borderColor = '#e2e8f0'; e.target.style.background = '#f8fafc' }}
             />
-            <button style={btnStyle} onClick={handleSend} disabled={streaming || !input.trim()}>
-              {streaming ? '...' : '发送'}
+            <button style={sendBtn(!streaming && input.trim().length > 0)} onClick={send} disabled={streaming || !input.trim()}>
+              {streaming ? '···' : '发送'}
             </button>
           </div>
         </div>

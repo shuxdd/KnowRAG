@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 from ragas import evaluate
 from ragas.dataset_schema import SingleTurnSample, EvaluationDataset
 from ragas.llms import llm_factory
-from ragas.metrics.collections import (
-    faithfulness, context_recall, context_precision, answer_correctness,
-)
+# 使用 pre-0.4 内部路径（继承自 ragas.metrics.base.Metric）
+# collections API 使用 BaseMetric，与 evaluate() 不兼容
+from ragas.metrics._faithfulness import Faithfulness
+from ragas.metrics._context_recall import ContextRecall
+from ragas.metrics._context_precision import ContextPrecision
+from ragas.metrics._answer_correctness import AnswerCorrectness
 from langchain_openai import ChatOpenAI
 
 from backend.config import get_settings
@@ -18,12 +21,32 @@ settings = get_settings()
 
 
 class EvalService:
+    """
+    评估服务
+    使用 RAGAS 框架对 RAG 系统进行评估
+    支持多种检索策略的对比评估
+    评估指标包括：忠实度、上下文召回率、上下文精确率、答案正确性、答案准确率
+    """
+
     def __init__(self, db_path: str = "data/eval_results.db"):
+        """
+        初始化评估服务
+
+        Args:
+            db_path: 评估结果数据库路径
+        """
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.db_path = db_path
         self._init_db()
 
     def _init_db(self):
+        """
+        初始化评估结果数据库表结构
+
+        创建两个表：
+        - eval_runs: 存储每次评估运行的基本信息
+        - eval_results: 存储每个问题的具体评估结果
+        """
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS eval_runs (
@@ -54,9 +77,22 @@ class EvalService:
                     FOREIGN KEY (run_id) REFERENCES eval_runs(id)
                 );
             """)
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA journal_mode=WAL")  # 启用 WAL 模式提升并发性能
 
     def load_dataset(self, path: str = "data/test_qa_pairs.json") -> list[dict]:
+        """
+        加载评估数据集（QA 对）
+
+        Args:
+            path: 数据集 JSON 文件路径
+
+        Returns:
+            QA 对列表，每个包含 question 和 answer 字段
+
+        Raises:
+            FileNotFoundError: 数据集文件不存在
+            json.JSONDecodeError: JSON 格式错误
+        """
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -66,20 +102,30 @@ class EvalService:
             raise json.JSONDecodeError(f"Invalid JSON in {path}: {e.msg}", e.doc, e.pos)
 
     def run_evaluation(self, strategy: str = "all", limit: int = 0) -> str:
-        """Run evaluation. strategy: all | vector | hybrid | hybrid_rerank. limit: 0=all."""
+        """
+        执行评估
+
+        Args:
+            strategy: 评估策略（all/vector/hybrid/hybrid_rerank）
+            limit: 限制评估的问题数量，0 表示全部
+
+        Returns:
+            最后一次评估运行的 ID
+        """
         from backend.services.qa_service import qa_service
 
         all_pairs = self.load_dataset()
         if limit > 0:
             all_pairs = all_pairs[:limit]
 
+        # 确定要评估的策略列表
         strategies = (
             ["vector", "hybrid", "hybrid_rerank"]
             if strategy == "all"
             else [strategy]
         )
 
-        # LangChain LLM for custom answer accuracy scoring
+        # 初始化 LangChain LLM（用于自定义答案准确率评分）
         eval_llm = ChatOpenAI(
             model=settings.qwen_model,
             api_key=settings.qwen_api_key,
@@ -87,19 +133,22 @@ class EvalService:
             temperature=0.0,
         )
 
-        # RAGAS-compatible Instructor LLM for metrics evaluation
+        # 初始化 RAGAS 兼容的 LLM（用于指标计算）
         from openai import OpenAI
         _openai_client = OpenAI(
             api_key=settings.qwen_api_key,
             base_url=settings.qwen_base_url,
         )
-        ragas_llm = llm_factory(settings.qwen_model, client=_openai_client)
+        ragas_llm = llm_factory(settings.qwen_model, client=_openai_client, max_tokens=settings.qwen_max_tokens)
 
         last_run_id = None
+        # 逐个策略执行评估
         for strat in strategies:
             run_id = str(uuid.uuid4())
             last_run_id = run_id
             now = datetime.now(timezone.utc).isoformat()
+
+            # 创建评估运行记录
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
                     "INSERT INTO eval_runs (id, strategy, dataset_name, question_count, started_at) VALUES (?, ?, ?, ?, ?)",
@@ -107,25 +156,26 @@ class EvalService:
                 )
 
             samples = []
+            # 对每个问题执行检索和生成
             for pair in all_pairs:
                 question = pair["question"]
-                ground_truth = pair["ground_truth"]
+                ground_truth = pair["answer"]
 
-                # Retrieve
+                # (1) 文档检索
                 docs = qa_service.search(question, strategy=strat, top_k=5)
                 contexts = [doc.page_content for doc in docs] if docs else []
 
-                # Generate answer
+                # (2) 生成答案
                 if docs:
                     result = qa_service.ask(question, strategy=strat, top_k=5)
                     answer = result["answer"]
                 else:
                     answer = "未在知识库中找到相关信息。"
 
-                # Compute accuracy (custom metric)
+                # (3) 计算自定义准确率指标
                 accuracy = self._compute_answer_accuracy(answer, ground_truth, eval_llm)
 
-                # Build RAGAS sample — use correct field names for ragas 0.4.3
+                # (4) 构建 RAGAS 样本
                 samples.append(
                     SingleTurnSample(
                         user_input=question,
@@ -135,23 +185,23 @@ class EvalService:
                     )
                 )
 
-                # Persist individual result
+                # (5) 持久化单个评估结果
                 with sqlite3.connect(self.db_path) as conn:
                     conn.execute(
                         "INSERT INTO eval_results (run_id, question, ground_truth, answer, contexts, answer_accuracy) VALUES (?, ?, ?, ?, ?, ?)",
                         (run_id, question, ground_truth, answer, json.dumps(contexts, ensure_ascii=False), accuracy),
                     )
 
-            # RAGAS batch evaluation
+            # (6) 批量 RAGAS 评估
             if samples:
                 ds = EvaluationDataset(samples=samples)
                 ragas_result = evaluate(
                     ds,
                     metrics=[
-                        faithfulness(),
-                        context_recall(),
-                        context_precision(),
-                        answer_correctness(),
+                        Faithfulness(llm=ragas_llm),
+                        ContextRecall(llm=ragas_llm),
+                        ContextPrecision(llm=ragas_llm),
+                        AnswerCorrectness(llm=ragas_llm, weights=[1.0, 0.0]),
                     ],
                     llm=ragas_llm,
                     show_progress=True,
@@ -160,7 +210,7 @@ class EvalService:
             else:
                 metrics_df = None
 
-            # Update individual results with RAGAS metrics
+            # (7) 更新单个结果的 RAGAS 指标
             if metrics_df is not None:
                 with sqlite3.connect(self.db_path) as conn:
                     rows = conn.execute(
@@ -181,7 +231,7 @@ class EvalService:
                                 ),
                             )
 
-            # Aggregate and update run summary
+            # (8) 汇总并更新评估运行摘要
             with sqlite3.connect(self.db_path) as conn:
                 agg = conn.execute(
                     "SELECT AVG(faithfulness), AVG(context_recall), AVG(context_precision), AVG(answer_correctness), AVG(answer_accuracy) FROM eval_results WHERE run_id = ?",
@@ -195,6 +245,18 @@ class EvalService:
         return last_run_id
 
     def _compute_answer_accuracy(self, answer: str, ground_truth: str, llm) -> float:
+        """
+        计算答案准确率（自定义指标）
+        使用 LLM 判断生成答案中覆盖了标准答案的多少关键事实
+
+        Args:
+            answer: 生成的答案
+            ground_truth: 标准答案
+            llm: 用于评估的 LLM
+
+        Returns:
+            准确率分数（0.0 - 1.0）
+        """
         prompt = f"""You are evaluating answer accuracy. Given the reference answer and the generated answer, rate how many key facts from the reference are covered in the generated answer.
 
 Reference: {ground_truth}
@@ -215,6 +277,12 @@ Score:"""
             return 0.0
 
     def get_runs(self) -> list[dict]:
+        """
+        获取所有评估运行列表
+
+        Returns:
+            评估运行列表，按开始时间降序排列
+        """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -223,6 +291,15 @@ Score:"""
             return [dict(r) for r in rows]
 
     def get_run_detail(self, run_id: str) -> dict | None:
+        """
+        获取指定评估运行的详细信息
+
+        Args:
+            run_id: 评估运行 ID
+
+        Returns:
+            评估运行详情，包含所有问题的评估结果；如果不存在返回 None
+        """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             run = conn.execute(
@@ -252,4 +329,5 @@ Score:"""
             return run_dict
 
 
+# 全局单例实例
 eval_service = EvalService()

@@ -1,43 +1,55 @@
 import os
 
 # HuggingFace 镜像必须在任何模型加载前设置
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Qwen LLM
-    qwen_api_key: str
-    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwen_model: str = "qwen3-max"
+    """
+    应用配置类
+    使用 pydantic-settings 从环境变量和 .env 文件读取配置
+    """
 
-    # Embedding
-    embedding_model: str = "BAAI/bge-small-zh-v1.5"
-    embedding_device: str = "cpu"
+    # ==================== Qwen LLM 配置 ====================
+    qwen_api_key: str  # 阿里云 DashScope API 密钥（必填）
+    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # API 地址
+    qwen_model: str = "qwen-plus"  # 使用的 Qwen 模型
+    qwen_max_tokens: int = 8192  # LLM 最大输出 token 数
 
-    # Reranker
-    reranker_model: str = "BAAI/bge-reranker-base"
+    # ==================== Embedding 配置 ====================
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"  # Embedding 模型名称
+    embedding_device: str = "cpu"  # Embedding 模型运行设备
 
-    # ChromaDB
-    chroma_persist_dir: str = "data/chroma_db"
-    chroma_collection: str = "knowledge_base"
+    # ==================== Reranker 配置 ====================
+    reranker_model: str = "BAAI/bge-reranker-base"  # 重排序模型名称
 
-    # Chunking
-    chunk_size: int = 500
-    chunk_overlap: int = 50
+    # ==================== ChromaDB 配置 ====================
+    chroma_persist_dir: str = "data/chroma_db"  # 向量数据库持久化目录
+    chroma_collection: str = "knowledge_base"    # 向量集合名称
 
-    # Upload
-    upload_dir: str = "data/uploads"
-    max_upload_size_mb: int = 50
+    # ==================== 文档分块配置 ====================
+    chunk_size: int = 500      # 分块大小（字符数）
+    chunk_overlap: int = 50   # 分块重叠大小
 
-    # HuggingFace mirror
-    hf_endpoint: str = "https://hf-mirror.com"
+    # ==================== 文件上传配置 ====================
+    upload_dir: str = "data/uploads"  # 上传文件存储目录
+    max_upload_size_mb: int = 50      # 最大上传文件大小（MB）
+
+    # ==================== HuggingFace 配置 ====================
+    hf_endpoint: str = "https://hf-mirror.com"  # HuggingFace 镜像地址
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 @lru_cache()
 def get_settings() -> Settings:
+    """
+    获取配置单例（带缓存）
+
+    Returns:
+        Settings 实例
+    """
     return Settings()
