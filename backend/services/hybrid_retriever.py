@@ -7,7 +7,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.retrievers import BM25Retriever
 from langchain_openai import ChatOpenAI
 
-from backend.config import settings
+from backend.config import get_settings
+
+settings = get_settings()
 from backend.services.parent_store import parent_store
 
 # ==================== HyDE 提示词模板 ====================

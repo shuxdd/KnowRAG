@@ -31,6 +31,13 @@ node_modules/
 # Streamlit
 .streamlit/secrets.toml
 
+# Claude Code artifacts
+.claude/worktrees/
+.superpowers/
+
+# Local Claude Code settings (user-specific, may contain permissions)
+.claude/settings.local.json
+
 # Distribution
 dist/
 build/
