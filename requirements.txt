@@ -25,3 +25,9 @@ httpx>=0.28.0
 
 rank-bm25>=0.2.0
 jieba>=0.42.0
+
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg2-binary>=2.9
+pymupdf>=1.24
+testcontainers[postgres]>=4.0

@@ -34,6 +34,22 @@ class Settings(BaseSettings):
     chunk_size: int = 500      # 分块大小（字符数）
     chunk_overlap: int = 50   # 分块重叠大小
 
+    # === PostgreSQL ===
+    postgres_url: str = "postgresql+psycopg2://knowrag:knowrag@localhost:5432/knowrag"
+    pg_pool_size: int = 5
+    pg_pool_max_overflow: int = 10
+    auto_migrate: bool = True
+
+    # === Chunking ===
+    parent_max_chars: int = 1500
+    leaf_chunk_size: int = 300
+    leaf_chunk_overlap: int = 30
+
+    # === PDF heuristic thresholds ===
+    pdf_h1_ratio: float = 1.4
+    pdf_h2_ratio: float = 1.2
+    pdf_h3_ratio: float = 1.05
+
     # ==================== 文件上传配置 ====================
     upload_dir: str = "data/uploads"  # 上传文件存储目录
     max_upload_size_mb: int = 50      # 最大上传文件大小（MB）
