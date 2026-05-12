@@ -106,3 +106,30 @@ class DocumentService:
 
 # 全局单例实例，供其他模块直接导入使用
 document_service = DocumentService()
+
+from backend.services.parsing.markdown_parser import MarkdownParser
+from backend.services.parsing.docx_parser import DocxParser
+from backend.services.parsing.pdf_parser import PdfParser
+from backend.services.parsing.txt_parser import TxtParser
+
+_PARSERS = {
+    ".md": MarkdownParser(),
+    ".markdown": MarkdownParser(),
+    ".pdf": PdfParser(),
+    ".docx": DocxParser(),
+    ".txt": TxtParser(),
+}
+
+
+def _normalize_ext(filename: str) -> str:
+    import os
+
+    ext = os.path.splitext(filename)[1].lower()
+    return ".md" if ext in (".md", ".markdown") else ext
+
+
+def _get_parser(ext: str):
+    parser = _PARSERS.get(ext)
+    if parser is None:
+        raise ValueError(f"Unsupported file type: {ext}")
+    return parser
