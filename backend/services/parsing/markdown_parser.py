@@ -47,9 +47,6 @@ class MarkdownParser(BaseParser):
                 while i < len(lines) and not lines[i].startswith("```"):
                     code_lines.append(lines[i])
                     i += 1
-                # Include closing fence line for stripping later
-                if i < len(lines):
-                    code_lines.append(lines[i])
                 code_text = "\n".join(code_lines).strip("\n ")
                 result.append(
                     StructuredElement(content=code_text, element_type="code")
