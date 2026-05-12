@@ -38,9 +38,9 @@ class QAService:
 
     # 检索策略映射表
     STRATEGIES = {
-        "vector": hybrid_retriever.vector_search,           # 纯向量检索
-        "hybrid": hybrid_retriever.hybrid_search,           # 混合检索（向量 + BM25）
-        "hybrid_rerank": hybrid_retriever.hybrid_search_with_rerank,  # 混合检索 + 重排序
+        "vector": lambda q, top_k: hybrid_retriever.invoke(q),
+        "hybrid": lambda q, top_k: hybrid_retriever.invoke(q),
+        "hybrid_rerank": lambda q, top_k: hybrid_retriever.invoke(q),
     }
 
     def __init__(self):

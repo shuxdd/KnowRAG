@@ -17,6 +17,7 @@ class Source(BaseModel):
     content: str    # 来源文档的内容摘要
     filename: str  # 来源文件名
     score: float   # 相关性分数
+    heading_path: list[str] | None = None
 
 
 class QuestionResponse(BaseModel):
