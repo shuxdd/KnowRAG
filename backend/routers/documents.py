@@ -90,25 +90,7 @@ async def list_documents():
 
 @router.delete("/{doc_id:path}")
 async def delete_document(doc_id: str):
-    """
-    删除指定文档接口
-
-    Args:
-        doc_id: 要删除的文档 ID（文件名）
-
-    Returns:
-        删除结果，包含删除的分块数量
-
-    Raises:
-        HTTPException: 如果文档不存在，返回 404 错误
-    """
-    # 从向量数据库删除
-    deleted = vector_service.delete_by_filename(doc_id)
-    # 从本地存储删除文件
-    for f in os.listdir("data/uploads"):
-        if f.endswith("_" + doc_id):
-            os.remove(os.path.join("data/uploads", f))
-            break
-    if deleted == 0:
+    result = document_service.delete_file(doc_id)
+    if result["leaves"] == 0 and result["parents"] == 0:
         raise HTTPException(status_code=404, detail="Document not found")
-    return {"detail": f"Deleted {deleted} chunks"}
+    return {"detail": f"Deleted {result['leaves']} leaf chunks and {result['parents']} parent chunks"}
