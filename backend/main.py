@@ -12,6 +12,30 @@ app = FastAPI(
     description="RAG-powered enterprise knowledge base with hybrid search and reranking",  # API 描述
 )
 
+import logging
+from alembic.config import Config as AlembicConfig
+from alembic import command as alembic_command
+from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+
+@app.on_event("startup")
+async def run_migrations():
+    """Run Alembic migrations on startup if auto_migrate is enabled."""
+    if not settings.auto_migrate:
+        logger.info("auto_migrate disabled, skipping Alembic migration")
+        return
+    try:
+        alembic_cfg = AlembicConfig("alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", settings.postgres_url)
+        alembic_command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migration up to date")
+    except Exception as e:
+        logger.warning(f"Alembic migration failed (PG not ready?): {e}")
+
+
 # 配置 CORS 中间件，允许前端开发服务器访问
 app.add_middleware(
     CORSMiddleware,
