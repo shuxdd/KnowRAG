@@ -1,5 +1,4 @@
 import uuid
-from sqlalchemy.orm import Session
 from backend.db import SessionFactory
 from backend.models.db_models import ParentChunkORM
 from backend.models.chunk_types import ParentChunk
