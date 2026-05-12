@@ -17,7 +17,7 @@ class ParentChunkORM(Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     filename: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    heading_path: Mapped[list] = mapped_column(JSONB, nullable=False)
+    heading_path: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
