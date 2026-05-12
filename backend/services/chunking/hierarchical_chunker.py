@@ -63,6 +63,7 @@ class HierarchicalChunker:
                     flush_parent()
                     current_parent_elements = []
                     current_parent_path = [h[1] for h in heading_stack]
+                    current_parent_elements.append(el)
                 else:
                     current_parent_elements.append(el)
             else:
@@ -193,47 +194,18 @@ class HierarchicalChunker:
         heading_path: list[str],
         filename: str,
     ) -> Tuple[list[ParentChunk], list[LeafChunk]]:
-        # Build the full text content to check its size
-        full_content = "\n\n".join(el.content for el in elements)
-
-        # If it fits, short-circuit
-        if len(full_content) <= settings.parent_max_chars:
+        total_len = sum(len(el.content) for el in elements)
+        if total_len <= settings.parent_max_chars:
             p = self._build_parent(elements, heading_path, filename)
             return [p], self._build_leaves(p, elements)
 
-        paras = [el for el in elements if el.element_type == "paragraph"]
-
-        # Single oversized paragraph: split at the text level
-        if len(paras) <= 1:
-            split_docs = self._splitter.create_documents([full_content])
-            all_parents: list[ParentChunk] = []
-            all_leaves: list[LeafChunk] = []
-
-            for ci, doc in enumerate(split_docs):
-                sub_path = heading_path[:]
-                if ci > 0:
-                    sub_path = heading_path[:] + ["(continued)"]
-
-                sub_el = StructuredElement(
-                    content=doc.page_content, element_type="paragraph"
-                )
-                sub_parent = self._build_parent([sub_el], sub_path, filename)
-                sub_leaves = self._build_leaves(sub_parent, [sub_el])
-                all_parents.append(sub_parent)
-                all_leaves.extend(sub_leaves)
-
-            return all_parents, all_leaves
-
-        # Multiple paragraphs: group them to stay under parent_max_chars
-        total_len = sum(len(el.content) for el in elements)
-        target = max(
-            1, len(paras) // max(1, total_len // settings.parent_max_chars)
-        )
+        target = max(1, total_len // settings.parent_max_chars)
+        # Group all elements by approximate chunk count
+        chunk_size = max(1, len(elements) // target)
         all_parents: list[ParentChunk] = []
         all_leaves: list[LeafChunk] = []
-
-        for i in range(0, len(paras), target):
-            sub = paras[i : i + target]
+        for i in range(0, len(elements), chunk_size):
+            sub = elements[i:i + chunk_size]
             sub_path = heading_path[:]
             if i > 0:
                 sub_path = heading_path[:] + ["(continued)"]
@@ -241,5 +213,4 @@ class HierarchicalChunker:
             sub_leaves = self._build_leaves(sub_parent, sub)
             all_parents.append(sub_parent)
             all_leaves.extend(sub_leaves)
-
         return all_parents, all_leaves

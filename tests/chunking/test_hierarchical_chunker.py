@@ -1,4 +1,3 @@
-import uuid
 from backend.services.chunking.hierarchical_chunker import HierarchicalChunker
 from backend.services.parsing.base import StructuredElement
 
@@ -83,7 +82,8 @@ def test_parent_leaf_link():
 def test_parent_oversize_downgrade():
     elements = [
         _make_heading("Big Section", 2),
-        _make_para("A" * 1600),
+        _make_para("A" * 1500),
+        _make_para("B" * 1500),
     ]
     chunker = HierarchicalChunker()
     parents, leaves = chunker.chunk(elements, "big.md")
