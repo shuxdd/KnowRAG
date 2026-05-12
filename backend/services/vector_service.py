@@ -4,12 +4,14 @@ import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+import json
 import uuid
 from typing import List
 from chromadb import PersistentClient
 from chromadb.utils import embedding_functions
 from langchain_core.documents import Document
 from backend.config import get_settings
+from backend.models.chunk_types import LeafChunk
 
 settings = get_settings()
 
@@ -153,6 +155,24 @@ class VectorService:
             返回文档块的总数量
         """
         return self.collection.count()
+
+    def add_leaves(self, leaves: list[LeafChunk]) -> list[str]:
+        """Add leaf chunks (v5 Parent-Child pipeline)."""
+        ids = [leaf.id for leaf in leaves]
+        documents = [leaf.content for leaf in leaves]
+        metadatas = [
+            {
+                "parent_id": leaf.parent_id,
+                "filename": leaf.filename,
+                "heading_path_json": json.dumps(leaf.heading_path, ensure_ascii=False),
+                "page": leaf.page,
+                "chunk_index": leaf.chunk_index,
+                "preserve": leaf.preserve,
+            }
+            for leaf in leaves
+        ]
+        self.collection.add(ids=ids, documents=documents, metadatas=metadatas)
+        return ids
 
 
 # 全局单例实例
