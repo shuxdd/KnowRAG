@@ -134,12 +134,6 @@ const inputRow: React.CSSProperties = {
   alignItems: 'center',
 }
 
-const select: React.CSSProperties = {
-  padding: '9px 12px', borderRadius: 8, border: '1px solid #e2e8f0',
-  fontSize: 12, background: '#f8fafc', cursor: 'pointer', color: '#475569',
-  outline: 'none', flexShrink: 0,
-}
-
 const inputField: React.CSSProperties = {
   flex: 1, padding: '9px 14px', borderRadius: 8,
   border: '1px solid #e2e8f0', fontSize: 14, outline: 'none',
@@ -191,7 +185,7 @@ export default function QAPage() {
   const [activeSid, setActiveSid] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
-  const [strategy, setStrategy] = useState('hybrid_rerank')
+  const [currentRoute, setCurrentRoute] = useState<string>('')
   const [streaming, setStreaming] = useState(false)
   const [streamText, setStreamText] = useState('')
   const [streamSources, setStreamSources] = useState<Source[]>([])
@@ -240,9 +234,9 @@ export default function QAPage() {
     setStreamText(''); setStreamSources([]); setStreaming(true)
 
     await askQuestionStream(
-      q, activeSid, strategy, 5,
+      q, activeSid, 'auto', 5,
       (t) => setStreamText(p => p + t),
-      (srcs) => setStreamSources(srcs),
+      (srcs, route) => { setStreamSources(srcs); if (route) setCurrentRoute(route) },
       (newId) => {
         setStreamText(prev => {
           setMessages(msgs => [...msgs, {
@@ -362,11 +356,25 @@ export default function QAPage() {
 
           {/* Input */}
           <div style={inputRow}>
-            <select style={select} value={strategy} onChange={(e) => setStrategy(e.target.value)}>
-              <option value="vector">向量检索</option>
-              <option value="hybrid">混合检索</option>
-              <option value="hybrid_rerank">混合回排+Rerank</option>
-            </select>
+            {currentRoute && (
+              <span style={{
+                padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                background: currentRoute === 'fast' ? '#dcfce7' :
+                            currentRoute === 'precise' ? '#fef9c3' :
+                            currentRoute === 'deep' ? '#fee2e2' :
+                            '#f1f5f9',
+                color: currentRoute === 'fast' ? '#166534' :
+                       currentRoute === 'precise' ? '#854d0e' :
+                       currentRoute === 'deep' ? '#991b1b' :
+                       '#64748b',
+                flexShrink: 0,
+              }}>
+                {currentRoute === 'fast' ? '快速' :
+                 currentRoute === 'precise' ? '精准' :
+                 currentRoute === 'deep' ? '深度' :
+                 currentRoute}
+              </span>
+            )}
             <input
               ref={inputRef}
               style={inputField}

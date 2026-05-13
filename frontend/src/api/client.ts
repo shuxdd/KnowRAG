@@ -186,7 +186,7 @@ export async function askQuestionStream(
   strategy: string,
   topK: number,
   onToken: (token: string) => void,
-  onSources: (sources: Source[]) => void,
+  onSources: (sources: Source[], route?: string) => void,
   onDone: (newSessionId: string) => void,
   onError: (error: Error) => void,
 ): Promise<void> {
@@ -224,7 +224,8 @@ export async function askQuestionStream(
             if (event.type === 'token') {
               onToken(event.data as string)
             } else if (event.type === 'sources') {
-              onSources(event.data as Source[])
+              const route = (event as any).route as string | undefined
+              onSources(event.data as Source[], route)
             } else if (event.type === 'done') {
               if (newSessionId) onDone(newSessionId)
             }
