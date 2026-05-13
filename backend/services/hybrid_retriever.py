@@ -110,7 +110,7 @@ class HybridRetriever(BaseRetriever):
     # 向量检索器（需要在初始化时注入）
     vector_retriever: BaseRetriever
     # BM25 检索器（需要在初始化时注入）
-    bm25_retriever: BM25Retriever
+    bm25_retriever: BaseRetriever
     # RRF 融合参数 k，控制排名靠前文档的优势程度
     rrf_k: int = 60
     # 从每个检索器获取的候选文档数量
@@ -210,11 +210,33 @@ class HybridRetriever(BaseRetriever):
             ))
         return ordered_docs[:top_n]
 
-    def _get_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
+    def _fast_retrieve(self, query: str, top_k: int) -> list[Document]:
+        """Fast strategy: vector retrieval only, no BM25/HyDE/Reranker."""
+        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
+        self.vector_retriever.search_kwargs["k"] = top_k * 2
+        docs = self.vector_retriever.invoke(query)
+        self.vector_retriever.search_kwargs["k"] = orig_k
+        return self._expand_to_parents(docs, top_n=top_k)
+
+    def _precise_retrieve(self, query: str, top_k: int) -> list[Document]:
+        """Precise strategy: vector + BM25 -> RRF fusion, no HyDE/Reranker."""
+        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
+        fetch_k = self.fetch_k if self.fetch_k else 10
+
+        self.vector_retriever.search_kwargs["k"] = fetch_k
+        vec_docs = self.vector_retriever.invoke(query)
+        self.vector_retriever.search_kwargs["k"] = orig_k
+
+        bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
+        fused = rrf_fusion([vec_docs, bm25_docs], k=self.rrf_k, top_n=top_k)
+        return self._expand_to_parents(fused, top_n=top_k)
+
+    def _deep_retrieve(self, query: str, top_k: int) -> list[Document]:
+        """Deep strategy: full pipeline (vector + BM25 + HyDE -> RRF -> Reranker)."""
         from backend.services.reranker import reranker
 
         orig_k = self.vector_retriever.search_kwargs.get("k", 4)
-        fetch_k = self.fetch_k or orig_k * 2
+        fetch_k = self.fetch_k if self.fetch_k else 10
 
         self.vector_retriever.search_kwargs["k"] = fetch_k
         vec_docs = self.vector_retriever.invoke(query)
@@ -224,8 +246,12 @@ class HybridRetriever(BaseRetriever):
         hyde_docs = self._hyde_search(query, top_k=fetch_k)
 
         fused = rrf_fusion([vec_docs, bm25_docs, hyde_docs], k=self.rrf_k, top_n=10)
-        reranked = reranker.rerank(query, fused, top_n=orig_k)
-        return self._expand_to_parents(reranked, top_n=orig_k)
+        reranked = reranker.rerank(query, fused, top_n=top_k)
+        return self._expand_to_parents(reranked, top_n=top_k)
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
+        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
+        return self._deep_retrieve(query, top_k=orig_k)
 
     async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
         from backend.services.reranker import reranker
