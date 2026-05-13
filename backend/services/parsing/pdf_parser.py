@@ -1,17 +1,48 @@
+import logging
 import fitz
 from collections import Counter
 from backend.config import get_settings
 from backend.services.parsing.base import BaseParser, StructuredElement
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class PdfParser(BaseParser):
     def parse(self, filepath: str) -> list[StructuredElement]:
         doc = fitz.open(filepath)
-        if doc.page_count == 0:
+        page_count = doc.page_count
+        if page_count == 0:
+            doc.close()
             return []
 
+        total_chars = 0
+        for page in doc:
+            total_chars += len(page.get_text().strip())
+        doc.close()
+
+        if total_chars < 100 * page_count:
+            logger.info(
+                "Detected scanned PDF (%d chars across %d pages), falling back to MinerU",
+                total_chars,
+                page_count,
+            )
+            try:
+                from backend.services.parsing.mineru_parser import MinerUParser
+
+                return MinerUParser().parse(filepath)
+            except ImportError:
+                logger.warning(
+                    "MinerU not installed, falling back to PyMuPDF for scanned PDF"
+                )
+            except Exception:
+                logger.warning(
+                    "MinerU parsing failed for %s, falling back to PyMuPDF",
+                    filepath,
+                    exc_info=True,
+                )
+
+        doc = fitz.open(filepath)
         sizes: list[float] = []
         pages_text: list[list[tuple[fitz.Rect, str, float, bool]]] = []
 

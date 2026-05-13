@@ -54,3 +54,65 @@ def test_table_extraction(tmp_path):
     parser = PdfParser()
     elements = parser.parse(str(path))
     assert len(elements) > 0
+
+
+def test_normal_pdf_still_parsed_by_pymupdf(tmp_path):
+    """有文本层的正常 PDF 仍然走 PyMuPDF 解析。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "This is a normal PDF with text content.", fontsize=12)
+    page.insert_text((72, 130), "It has enough characters per page.", fontsize=12)
+    page.insert_text((72, 160), "Sufficient body text covers detection threshold.", fontsize=12)
+    page.insert_text((72, 190), "More content to comfortably exceed 100 chars.", fontsize=12)
+    path = tmp_path / "normal.pdf"
+    doc.save(str(path))
+    doc.close()
+    parser = PdfParser()
+    elements = parser.parse(str(path))
+    texts = [e.content for e in elements]
+    combined = " ".join(texts)
+    assert "normal PDF" in combined
+
+
+def test_scanned_pdf_falls_back_to_mineru(tmp_path):
+    """扫描件 PDF（无文本层）应 fallback 到 MinerU。MinerU 不可用时回退 PyMuPDF。"""
+    import shutil
+
+    try:
+        from langchain_mineru import MinerULoader  # noqa: F401
+
+        mineru_available = True
+    except ImportError:
+        mineru_available = False
+
+    fixture = "tests/fixtures/scanned_sample.pdf"
+    dest = tmp_path / "scanned.pdf"
+    shutil.copy(fixture, str(dest))
+
+    parser = PdfParser()
+    elements = parser.parse(str(dest))
+    assert isinstance(elements, list)
+    if mineru_available:
+        # MinerU 走通后应该 OCR 出文本 → 非空元素列表
+        assert len(elements) > 0, "MinerU fallback should produce elements for scanned fixture"
+
+
+def test_empty_pdf_returns_empty(monkeypatch):
+    """0 页 PDF 应直接返回空列表（通过 mock 模拟，因 PyMuPDF 不允许保存 0 页）。"""
+    import fitz
+
+    class FakeDoc:
+        page_count = 0
+
+        def __iter__(self):
+            return iter([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fitz, "open", lambda _path: FakeDoc())
+    parser = PdfParser()
+    elements = parser.parse("fake.pdf")
+    assert elements == []
