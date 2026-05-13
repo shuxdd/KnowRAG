@@ -31,3 +31,4 @@ alembic>=1.13
 psycopg2-binary>=2.9
 pymupdf>=1.24
 testcontainers[postgres]>=4.0
+langchain-mineru>=0.1.3
