@@ -194,6 +194,7 @@ export default function QAPage() {
 
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const streamSourcesRef = useRef<Source[]>([])
 
   const loadSessions = useCallback(async () => {
     try { const r = await listSessions(); setSessions(r.sessions) } catch { /* */ }
@@ -232,19 +233,20 @@ export default function QAPage() {
     const q = input.trim()
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); setStreaming(true)
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setStreaming(true)
     const t0 = Date.now()
 
     await askQuestionStream(
       q, activeSid, 'auto', 5,
       (t) => setStreamText(p => p + t),
-      (srcs, route) => { setStreamSources(srcs); if (route) setCurrentRoute(route) },
+      (srcs, route) => { setStreamSources(srcs); streamSourcesRef.current = srcs; if (route) setCurrentRoute(route) },
       (newId) => {
         const elapsed = Date.now() - t0
+        const finalSources = streamSourcesRef.current
         setStreamText(prev => {
           setMessages(msgs => [...msgs, {
             role: 'assistant', content: prev,
-            sources: streamSources.length > 0 ? streamSources : null,
+            sources: finalSources.length > 0 ? finalSources : null,
           }])
           return ''
         })
