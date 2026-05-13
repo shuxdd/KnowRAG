@@ -7,7 +7,7 @@ from typing import Literal, Optional
 class QuestionRequest(BaseModel):
     """问答请求模型"""
     question: str = Field(..., min_length=1, max_length=2000)  # 问题内容，1-2000字符
-    strategy: Literal["vector", "hybrid", "hybrid_rerank"] = "hybrid_rerank"  # 检索策略
+    strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"  # 检索策略
     top_k: int = Field(default=5, ge=1, le=50)  # 返回的文档数量，1-50
     session_id: Optional[str] = None  # 会话 ID（V2新增，可选）
 
@@ -29,7 +29,7 @@ class QuestionResponse(BaseModel):
 class SearchRequest(BaseModel):
     """文档检索请求模型"""
     query: str = Field(..., min_length=1, max_length=2000)  # 查询文本
-    strategy: Literal["vector", "hybrid", "hybrid_rerank"] = "hybrid_rerank"  # 检索策略
+    strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"  # 检索策略
     top_k: int = Field(default=5, ge=1, le=50)  # 返回结果数量
 
 
@@ -106,7 +106,7 @@ class SessionDetailResponse(BaseModel):
 
 class EvalRunRequest(BaseModel):
     """评估运行请求模型"""
-    strategy: Literal["all", "vector", "hybrid", "hybrid_rerank"] = "all"  # 评估策略
+    strategy: Literal["all", "vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "all"  # 评估策略
 
 
 class EvalRunInfo(BaseModel):
