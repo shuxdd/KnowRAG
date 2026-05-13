@@ -186,6 +186,7 @@ export default function QAPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [currentRoute, setCurrentRoute] = useState<string>('')
+  const [lastResponseTime, setLastResponseTime] = useState<number | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [streamText, setStreamText] = useState('')
   const [streamSources, setStreamSources] = useState<Source[]>([])
@@ -212,7 +213,7 @@ export default function QAPage() {
   }
 
   const newChat = () => {
-    setActiveSid(null); setMessages([]); setStreamText('')
+    setActiveSid(null); setMessages([]); setStreamText(''); setCurrentRoute(''); setLastResponseTime(null)
     setTimeout(() => inputRef.current?.focus(), 0)
   }
 
@@ -232,12 +233,14 @@ export default function QAPage() {
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
     setStreamText(''); setStreamSources([]); setStreaming(true)
+    const t0 = Date.now()
 
     await askQuestionStream(
       q, activeSid, 'auto', 5,
       (t) => setStreamText(p => p + t),
       (srcs, route) => { setStreamSources(srcs); if (route) setCurrentRoute(route) },
       (newId) => {
+        const elapsed = Date.now() - t0
         setStreamText(prev => {
           setMessages(msgs => [...msgs, {
             role: 'assistant', content: prev,
@@ -246,6 +249,7 @@ export default function QAPage() {
           return ''
         })
         if (!activeSid) setActiveSid(newId)
+        setLastResponseTime(elapsed)
         setStreaming(false)
         loadSessions()
       },
@@ -356,25 +360,36 @@ export default function QAPage() {
 
           {/* Input */}
           <div style={inputRow}>
-            {currentRoute && (
-              <span style={{
-                padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                background: currentRoute === 'fast' ? '#dcfce7' :
-                            currentRoute === 'precise' ? '#fef9c3' :
-                            currentRoute === 'deep' ? '#fee2e2' :
-                            '#f1f5f9',
-                color: currentRoute === 'fast' ? '#166534' :
-                       currentRoute === 'precise' ? '#854d0e' :
-                       currentRoute === 'deep' ? '#991b1b' :
-                       '#64748b',
-                flexShrink: 0,
-              }}>
-                {currentRoute === 'fast' ? '快速' :
-                 currentRoute === 'precise' ? '精准' :
-                 currentRoute === 'deep' ? '深度' :
-                 currentRoute}
-              </span>
-            )}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+              {currentRoute && (
+                <span style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                  background: currentRoute === 'fast' ? '#dcfce7' :
+                              currentRoute === 'precise' ? '#fef9c3' :
+                              currentRoute === 'deep' ? '#fee2e2' :
+                              '#f1f5f9',
+                  color: currentRoute === 'fast' ? '#166534' :
+                         currentRoute === 'precise' ? '#854d0e' :
+                         currentRoute === 'deep' ? '#991b1b' :
+                         '#64748b',
+                }}>
+                  {currentRoute === 'fast' ? '快速' :
+                   currentRoute === 'precise' ? '精准' :
+                   currentRoute === 'deep' ? '深度' :
+                   currentRoute}
+                </span>
+              )}
+              {lastResponseTime != null && (
+                <span style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+                  background: '#f1f5f9', color: '#64748b',
+                }}>
+                  {lastResponseTime < 1000
+                    ? `${lastResponseTime}ms`
+                    : `${(lastResponseTime / 1000).toFixed(1)}s`}
+                </span>
+              )}
+            </div>
             <input
               ref={inputRef}
               style={inputField}
