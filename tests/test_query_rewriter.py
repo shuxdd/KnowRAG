@@ -136,3 +136,45 @@ class TestPrompt:
 
     def test_prompt_contains_output_format(self):
         assert "Output" in REWRITE_PROMPT and "JSON" in REWRITE_PROMPT
+
+
+class TestRouteField:
+    """Verify route field is parsed correctly from rewritten output."""
+
+    def test_route_field_parsed(self):
+        rewriter = QueryRewriter()
+        raw = json.dumps({
+            "original": "q",
+            "rewritten": "rw",
+            "sub_queries": [],
+            "changes": [],
+            "route": "fast",
+        })
+        result = rewriter._parse(raw, "q")
+        assert result["route"] == "fast"
+
+    def test_route_field_defaults_to_deep_when_missing(self):
+        rewriter = QueryRewriter()
+        raw = json.dumps({
+            "original": "q",
+            "rewritten": "rw",
+            "sub_queries": [],
+            "changes": [],
+        })
+        result = rewriter._parse(raw, "q")
+        assert result["route"] == "deep"
+
+    def test_route_field_in_rewrite_result(self):
+        rewriter = QueryRewriter()
+        mock_response = json.dumps({
+            "original": "VIP和普通客户的响应时间对比",
+            "rewritten": "VIP客户和普通客户响应时间差异",
+            "sub_queries": [],
+            "changes": [],
+            "route": "deep",
+        })
+        rewriter.llm = MagicMock()
+        rewriter.llm.invoke.return_value = MagicMock(content=mock_response)
+
+        result = rewriter.rewrite("VIP和普通客户的响应时间对比")
+        assert result["route"] == "deep"

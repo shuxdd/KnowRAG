@@ -73,6 +73,17 @@ Conversation history:
 
 Current query: {query}
 
+## Routing (required field)
+Analyze the query type and output a `route` field in the JSON:
+- "fast": simple fact lookup, yes/no answer, single definition, single-number retrieval
+- "precise": list/enumeration, table/numerical data retrieval, conditional filtering
+- "deep": comparison, multi-hop reasoning, cross-paragraph aggregation, causality
+
+Routing guidelines:
+- If the query asks "what is X", "who is Y", "how many", "when" → "fast"
+- If the query asks "list all", "categories", "how much (calculation needed)", "which ones meet condition" → "precise"
+- If the query asks "compare", "difference between", "why", "how does X relate to Y" → "deep"
+
 Output ONLY the JSON, no explanation."""
 
 
@@ -115,6 +126,7 @@ class QueryRewriter:
                 "rewritten": query,
                 "sub_queries": [],
                 "changes": [],
+                "route": "deep",
             }
 
     def _parse(self, raw: str, original: str) -> dict:
@@ -123,13 +135,17 @@ class QueryRewriter:
         if raw.startswith("```"):
             raw = re.sub(r"```(?:\w*)?\s*([\s\S]*?)\s*```", r"\1", raw).strip()
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
+            if "route" not in result:
+                result["route"] = "deep"
+            return result
         except json.JSONDecodeError:
             return {
                 "original": original,
                 "rewritten": raw,
                 "sub_queries": [],
                 "changes": [],
+                "route": "deep",
             }
 
     def get_queries(self, result: dict) -> List[str]:
