@@ -26,7 +26,8 @@ Analyze the conversation history and current query, then output a JSON with rewr
   "original": "<原始查询>",
   "rewritten": "<改写后的单查询，包含扩展词>",
   "sub_queries": ["子查询1", "子查询2"],
-  "changes": ["指代消解: X→Y", "扩展: +关键词"]
+  "changes": ["指代消解: X→Y", "扩展: +关键词"],
+  "route": "fast|precise|deep"
 }}
 ```
 
@@ -40,7 +41,8 @@ Output:
   "original": "它的核心组件有哪些",
   "rewritten": "LangChain的核心组件有哪些",
   "sub_queries": [],
-  "changes": ["指代消解: 它→LangChain"]
+  "changes": ["指代消解: 它→LangChain"],
+  "route": "fast"
 }}
 ```
 
@@ -52,7 +54,8 @@ Output:
   "original": "RAG和传统搜索有什么区别",
   "rewritten": "RAG和传统搜索区别对比",
   "sub_queries": ["RAG检索增强生成的原理和流程", "传统搜索技术的原理和特点"],
-  "changes": ["分解: 对比问题拆为两个方面"]
+  "changes": ["分解: 对比问题拆为两个方面"],
+  "route": "deep"
 }}
 ```
 
@@ -64,7 +67,8 @@ Output:
   "original": "怎么优化RAG",
   "rewritten": "RAG检索增强生成优化方法 提升召回率 提高准确性",
   "sub_queries": [],
-  "changes": ["扩展: +提升召回率 +提高准确性"]
+  "changes": ["扩展: +提升召回率 +提高准确性"],
+  "route": "precise"
 }}
 ```
 
@@ -109,7 +113,7 @@ class QueryRewriter:
             chat_history: 格式化的对话历史字符串
 
         Returns:
-            {original, rewritten, sub_queries, changes}
+            {original, rewritten, sub_queries, changes, route}
 
         失败时降级返回原始查询
         """
@@ -136,7 +140,10 @@ class QueryRewriter:
             raw = re.sub(r"```(?:\w*)?\s*([\s\S]*?)\s*```", r"\1", raw).strip()
         try:
             result = json.loads(raw)
-            if "route" not in result:
+            route = result.get("route", "").strip()
+            if route in ("fast", "precise", "deep"):
+                result["route"] = route
+            else:
                 result["route"] = "deep"
             return result
         except json.JSONDecodeError:

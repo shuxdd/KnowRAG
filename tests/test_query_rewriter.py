@@ -164,6 +164,30 @@ class TestRouteField:
         result = rewriter._parse(raw, "q")
         assert result["route"] == "deep"
 
+    def test_invalid_route_defaults_to_deep(self):
+        rewriter = QueryRewriter()
+        raw = json.dumps({
+            "original": "q",
+            "rewritten": "rw",
+            "sub_queries": [],
+            "changes": [],
+            "route": "complex",
+        })
+        result = rewriter._parse(raw, "q")
+        assert result["route"] == "deep"
+
+    def test_route_whitespace_trimmed_and_validated(self):
+        rewriter = QueryRewriter()
+        raw = json.dumps({
+            "original": "q",
+            "rewritten": "rw",
+            "sub_queries": [],
+            "changes": [],
+            "route": "fast\n",
+        })
+        result = rewriter._parse(raw, "q")
+        assert result["route"] == "fast"
+
     def test_route_field_in_rewrite_result(self):
         rewriter = QueryRewriter()
         mock_response = json.dumps({
