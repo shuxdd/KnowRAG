@@ -15,6 +15,8 @@ class TestQueryRouterRules:
         "你好",
         "hi",
         "hello",
+        "Hello",
+        "Hi",
         "早上好",
         "晚上好",
         "下午好",
@@ -28,6 +30,7 @@ class TestQueryRouterRules:
         "多谢",
         "谢谢你帮我查了这么多资料",
         "thanks",
+        "Thanks",
         "thank you",
     ])
     def test_thanks_routes_to_chat(self, router, query):
@@ -37,6 +40,7 @@ class TestQueryRouterRules:
         "再见",
         "拜拜",
         "bye",
+        "Bye",
         "goodbye",
     ])
     def test_farewell_routes_to_chat(self, router, query):
