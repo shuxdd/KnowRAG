@@ -155,3 +155,28 @@ class EvalRunDetail(BaseModel):
 class EvalListResponse(BaseModel):
     """评估列表响应模型"""
     runs: list[EvalRunInfo]  # 评估运行列表
+
+
+# ==================== 分块预览模型 ====================
+
+class LeafChunkPreview(BaseModel):
+    chunk_index: int
+    char_count: int
+    preserve: bool
+    undersized: bool
+    content_preview: str
+
+
+class ParentChunkPreview(BaseModel):
+    id: str
+    heading_path: list[str]
+    char_count: int
+    page_start: int | None = None
+    page_end: int | None = None
+    content_preview: str
+    leaves: list[LeafChunkPreview]
+
+
+class ChunkPreviewResponse(BaseModel):
+    filename: str
+    parents: list[ParentChunkPreview]

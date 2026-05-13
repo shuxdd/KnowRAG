@@ -39,6 +39,11 @@ class HierarchicalChunker:
             nonlocal current_parent_elements, current_parent_path
             if not current_parent_elements:
                 return
+            # Skip parent chunks that contain only headings (no body content)
+            if all(el.element_type == "heading" for el in current_parent_elements):
+                current_parent_elements = []
+                current_parent_path = []
+                return
             parent = self._build_parent(
                 current_parent_elements, current_parent_path[:], filename
             )
@@ -139,8 +144,36 @@ class HierarchicalChunker:
             )
             last_used_ci += 1
 
+        self._merge_undersized_leaves(leaves)
         leaves.sort(key=lambda l: l.chunk_index)
         return leaves
+
+    @staticmethod
+    def _merge_undersized_leaves(leaves: list[LeafChunk], min_chars: int = 100) -> None:
+        """Merge leaf chunks below `min_chars` into the previous leaf.
+
+        Skips preserved chunks (tables/code) — they stay atomic.
+        """
+        i = 0
+        while i < len(leaves):
+            leaf = leaves[i]
+            if leaf.preserve or len(leaf.content) >= min_chars:
+                i += 1
+                continue
+            # Find a merge target: prefer previous, fall back to next
+            if i > 0 and not leaves[i - 1].preserve:
+                target = leaves[i - 1]
+                target.content = target.content + "\n\n" + leaf.content
+                leaves.pop(i)
+                # don't advance i — next leaf slides into current position
+            elif i + 1 < len(leaves) and not leaves[i + 1].preserve:
+                target = leaves[i + 1]
+                target.content = leaf.content + "\n\n" + target.content
+                leaves.pop(i)
+                # advance past the merged target
+                i += 1
+            else:
+                i += 1
 
     def _split_oversized(
         self,

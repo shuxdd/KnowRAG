@@ -5,7 +5,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from backend.config import get_settings
 from backend.models.schemas import Source
-from backend.services.hybrid_retriever import hybrid_retriever
+from backend.services.hybrid_retriever import hybrid_retriever, rrf_fusion
 from backend.services.query_rewriter import QueryRewriter
 from backend.services.session_service import session_service
 
@@ -137,7 +137,7 @@ class QAService:
 
     def _retrieve(self, query: str, strategy: str, top_k: int) -> List[Document]:
         """Execute a single retrieval against the chosen strategy"""
-        retriever_fn = self.STRATEGIES.get(strategy, hybrid_retriever.hybrid_search_with_rerank)
+        retriever_fn = self.STRATEGIES.get(strategy, lambda q, top_k: hybrid_retriever.invoke(q))
         return retriever_fn(query, top_k=top_k)
 
     def _multi_query_retrieve(self, queries: List[str], strategy: str, top_k: int) -> List[Document]:
@@ -146,11 +146,7 @@ class QAService:
         for q in queries:
             docs = self._retrieve(q, strategy, top_k)
             all_docs.append(docs)
-        return hybrid_retriever.rrf_fusion(
-            all_docs[0],
-            [d for docs in all_docs[1:] for d in docs],
-            top_k=top_k,
-        )
+        return rrf_fusion(all_docs, top_n=top_k)
 
     def ask(self, question: str, strategy: str = "hybrid_rerank", top_k: int = 5):
         """

@@ -35,10 +35,12 @@ class Settings(BaseSettings):
     chunk_overlap: int = 50   # 分块重叠大小
 
     # === PostgreSQL ===
-    postgres_url: str = "postgresql+psycopg2://knowrag:knowrag@localhost:5432/knowrag"
+    postgres_url: str = "postgresql+psycopg://knowrag:knowrag@localhost:5433/knowrag?connect_timeout=5"
     pg_pool_size: int = 5
     pg_pool_max_overflow: int = 10
+    pg_connect_timeout: int = 5
     auto_migrate: bool = True
+    preload_models: bool = True
 
     # === Chunking ===
     parent_max_chars: int = 1500

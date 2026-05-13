@@ -1,10 +1,14 @@
 import os
 from datetime import datetime
+from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from backend.models.schemas import (
     UploadResponse,
     DocumentListResponse,
     DocumentInfo,
+    ChunkPreviewResponse,
+    ParentChunkPreview,
+    LeafChunkPreview,
 )
 from backend.services.document_service import document_service
 from backend.services.vector_service import vector_service
@@ -52,6 +56,36 @@ async def upload_document(file: UploadFile = File(...)):
     )
 
 
+@router.post("/upload/batch")
+async def upload_documents(files: List[UploadFile] = File(...)):
+    """批量文档上传接口"""
+    results = []
+    for file in files:
+        try:
+            validate_file(file)
+            content = await file.read()
+            filepath = document_service.save_upload(content, file.filename)
+            doc_id = document_service.process_file(filepath, file.filename)
+
+            collection_results = vector_service.collection.get(
+                where={"filename": file.filename}
+            )
+            chunks_count = len(collection_results["ids"]) if collection_results["ids"] else 0
+            results.append({
+                "doc_id": doc_id,
+                "filename": file.filename,
+                "chunks_count": chunks_count,
+                "status": "ok",
+            })
+        except Exception as e:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "error": str(e),
+            })
+    return {"results": results, "total": len(results)}
+
+
 @router.get("", response_model=DocumentListResponse)
 async def list_documents():
     """
@@ -88,9 +122,68 @@ async def list_documents():
     return DocumentListResponse(documents=documents)
 
 
+@router.delete("")
+async def delete_all_documents():
+    stats = vector_service.get_document_stats()
+    if not stats:
+        return {"detail": "No documents to delete"}
+    total_parents = 0
+    total_leaves = 0
+    deleted_files = 0
+    for s in stats:
+        filename = s["filename"]
+        result = document_service.delete_file(filename)
+        total_parents += result["parents"]
+        total_leaves += result["leaves"]
+        if result["parents"] > 0 or result["leaves"] > 0:
+            deleted_files += 1
+    return {"detail": f"Deleted {deleted_files} files, {total_leaves} leaf chunks, {total_parents} parent chunks"}
+
+
 @router.delete("/{doc_id:path}")
 async def delete_document(doc_id: str):
     result = document_service.delete_file(doc_id)
     if result["leaves"] == 0 and result["parents"] == 0:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"detail": f"Deleted {result['leaves']} leaf chunks and {result['parents']} parent chunks"}
+
+
+@router.get("/{doc_id:path}/chunks", response_model=ChunkPreviewResponse)
+async def get_document_chunks(doc_id: str):
+    from backend.services.parent_store import parent_store
+    from backend.services.vector_service import vector_service
+    from backend.config import get_settings
+    settings = get_settings()
+
+    parents = parent_store.get_by_filename(doc_id)
+    if not parents:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    parent_previews: list[ParentChunkPreview] = []
+    for p in parents:
+        leaf_results = vector_service.collection.get(where={"parent_id": p.id})
+        leaf_docs = []
+        if leaf_results["ids"]:
+            for i, lid in enumerate(leaf_results["ids"]):
+                meta = leaf_results["metadatas"][i] if leaf_results["metadatas"] else {}
+                content = leaf_results["documents"][i] if leaf_results["documents"] else ""
+                char_count = len(content)
+                leaf_docs.append(LeafChunkPreview(
+                    chunk_index=meta.get("chunk_index", i),
+                    char_count=char_count,
+                    preserve=bool(meta.get("preserve", False)),
+                    undersized=char_count < 100,
+                    content_preview=content[:150],
+                ))
+        leaf_docs.sort(key=lambda l: l.chunk_index)
+        parent_previews.append(ParentChunkPreview(
+            id=p.id,
+            heading_path=p.heading_path,
+            char_count=len(p.content),
+            page_start=p.page_start,
+            page_end=p.page_end,
+            content_preview=p.content[:200],
+            leaves=leaf_docs,
+        ))
+
+    return ChunkPreviewResponse(filename=doc_id, parents=parent_previews)

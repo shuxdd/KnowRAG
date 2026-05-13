@@ -29,7 +29,9 @@
       "Bash(python -c \"from ragas import evaluate; print\\('evaluate OK'\\)\")",
       "Bash(python *)",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(.venv/Scripts/python *)",
+      "Bash(pip list *)"
     ]
   },
   "enabledPlugins": {

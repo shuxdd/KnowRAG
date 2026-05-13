@@ -22,18 +22,36 @@ settings = get_settings()
 
 
 @app.on_event("startup")
-async def run_migrations():
-    """Run Alembic migrations on startup if auto_migrate is enabled."""
-    if not settings.auto_migrate:
-        logger.info("auto_migrate disabled, skipping Alembic migration")
-        return
-    try:
-        alembic_cfg = AlembicConfig("alembic.ini")
-        alembic_cfg.set_main_option("sqlalchemy.url", settings.postgres_url)
-        alembic_command.upgrade(alembic_cfg, "head")
-        logger.info("Alembic migration up to date")
-    except Exception as e:
-        logger.warning(f"Alembic migration failed (PG not ready?): {e}")
+async def run_startup():
+    """Run startup tasks: Alembic migrations + model preloading."""
+    # 1. Alembic migration
+    if settings.auto_migrate:
+        try:
+            alembic_cfg = AlembicConfig("alembic.ini")
+            alembic_cfg.set_main_option("sqlalchemy.url", settings.postgres_url)
+            alembic_command.upgrade(alembic_cfg, "head")
+            logger.info("Alembic migration up to date")
+        except Exception as e:
+            logger.warning(f"Alembic migration failed (PG not ready?): {e}")
+
+    # 2. Preload models
+    if settings.preload_models:
+        logger.info("Preloading models...")
+        try:
+            from backend.services.reranker import reranker
+            _ = reranker.model  # trigger CrossEncoder load
+            logger.info("Reranker model loaded")
+        except Exception as e:
+            logger.warning(f"Reranker preload failed: {e}")
+
+        try:
+            from backend.services.vector_service import vector_service
+            _ = vector_service.similarity_search("warmup", k=1)
+            logger.info("Embedding warm-up complete")
+        except Exception as e:
+            logger.warning(f"Embedding warm-up failed: {e}")
+
+        logger.info("Model preloading complete")
 
 
 # 配置 CORS 中间件，允许前端开发服务器访问

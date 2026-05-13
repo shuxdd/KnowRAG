@@ -62,6 +62,21 @@ class ParentStore:
             session.commit()
             return count
 
+    def get_by_filename(self, filename: str) -> list[ParentChunk]:
+        with self._session_factory() as session:
+            rows = session.query(ParentChunkORM).filter(ParentChunkORM.filename == filename).all()
+            return [
+                ParentChunk(
+                    id=str(r.id),
+                    content=r.content,
+                    filename=r.filename,
+                    heading_path=r.heading_path,
+                    page_start=r.page_start,
+                    page_end=r.page_end,
+                )
+                for r in rows
+            ]
+
     def delete_by_filename(self, filename: str) -> int:
         with self._session_factory() as session:
             count = session.query(ParentChunkORM).filter(ParentChunkORM.filename == filename).delete()

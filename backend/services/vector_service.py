@@ -165,7 +165,7 @@ class VectorService:
                 "parent_id": leaf.parent_id,
                 "filename": leaf.filename,
                 "heading_path_json": json.dumps(leaf.heading_path, ensure_ascii=False),
-                "page": leaf.page,
+                "page": leaf.page if leaf.page is not None else 0,
                 "chunk_index": leaf.chunk_index,
                 "preserve": leaf.preserve,
             }

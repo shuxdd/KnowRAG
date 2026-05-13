@@ -1,5 +1,6 @@
 import hashlib
 from collections import defaultdict
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
@@ -112,8 +113,8 @@ class HybridRetriever(BaseRetriever):
     bm25_retriever: BM25Retriever
     # RRF 融合参数 k，控制排名靠前文档的优势程度
     rrf_k: int = 60
-    # 从每个检索器获取的候选文档数量，0 表示使用 top_n 的两倍
-    fetch_k: int = 0
+    # 从每个检索器获取的候选文档数量
+    fetch_k: int = 10
 
     def __init__(self, **kwargs):
         """
@@ -122,13 +123,12 @@ class HybridRetriever(BaseRetriever):
         初始化 HyDE 专用的 LLM（用于生成假设答案）
         """
         super().__init__(**kwargs)
-        # 初始化用于 HyDE 的 LLM（使用 DeepSeek 模型）
         self._hyde_llm = ChatOpenAI(
-            model=settings.deepseek_model,
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            temperature=0.3,       # 中等随机性，生成的事实性假设答案
-            request_timeout=10,    # 请求超时时间（秒）
+            model=settings.qwen_model,
+            api_key=settings.qwen_api_key,
+            base_url=settings.qwen_base_url,
+            temperature=0.3,
+            request_timeout=10,
         )
 
     def _hyde_search(self, query: str, top_k: int) -> list[Document]:
@@ -223,7 +223,7 @@ class HybridRetriever(BaseRetriever):
         bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
         hyde_docs = self._hyde_search(query, top_k=fetch_k)
 
-        fused = rrf_fusion([vec_docs, bm25_docs, hyde_docs], k=self.rrf_k, top_n=orig_k * 2)
+        fused = rrf_fusion([vec_docs, bm25_docs, hyde_docs], k=self.rrf_k, top_n=10)
         reranked = reranker.rerank(query, fused, top_n=orig_k)
         return self._expand_to_parents(reranked, top_n=orig_k)
 
@@ -231,7 +231,7 @@ class HybridRetriever(BaseRetriever):
         from backend.services.reranker import reranker
 
         orig_k = self.vector_retriever.search_kwargs.get("k", 4)
-        fetch_k = self.fetch_k or orig_k * 2
+        fetch_k = self.fetch_k if self.fetch_k else 10
 
         self.vector_retriever.search_kwargs["k"] = fetch_k
         vec_docs = await self.vector_retriever.ainvoke(query)
@@ -240,6 +240,42 @@ class HybridRetriever(BaseRetriever):
         bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
         hyde_docs = self._hyde_search(query, top_k=fetch_k)
 
-        fused = rrf_fusion([vec_docs, bm25_docs, hyde_docs], k=self.rrf_k, top_n=orig_k * 2)
+        fused = rrf_fusion([vec_docs, bm25_docs, hyde_docs], k=self.rrf_k, top_n=10)
         reranked = reranker.rerank(query, fused, top_n=orig_k)
         return self._expand_to_parents(reranked, top_n=orig_k)
+
+
+class _VectorServiceRetriever(BaseRetriever):
+    """Thin BaseRetriever adapter around VectorService.similarity_search."""
+
+    vector_service: Any = None
+    search_kwargs: dict = {}
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
+        k = self.search_kwargs.get("k", 4)
+        return self.vector_service.similarity_search(query, k=k)
+
+    async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
+        return self._get_relevant_documents(query, run_manager=run_manager)
+
+
+def _build_hybrid_retriever() -> HybridRetriever:
+    from backend.services.vector_service import vector_service
+
+    vec_retriever = _VectorServiceRetriever(
+        vector_service=vector_service,
+        search_kwargs={"k": 3},
+    )
+
+    docs = vector_service.get_all_chunks()
+    bm25_retriever = BM25Retriever.from_documents(docs) if docs else BM25Retriever.from_documents(
+        [Document(page_content="__placeholder__", metadata={})]
+    )
+
+    return HybridRetriever(
+        vector_retriever=vec_retriever,
+        bm25_retriever=bm25_retriever,
+    )
+
+
+hybrid_retriever: HybridRetriever = _build_hybrid_retriever()

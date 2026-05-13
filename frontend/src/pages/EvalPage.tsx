@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  listEvalRuns, getEvalRun, triggerEval,
+  listEvalRuns, getEvalRun, triggerEval, deleteEvalRun,
   EvalRunInfo, EvalRunDetail,
 } from '../api/client'
 
@@ -178,6 +178,21 @@ export default function EvalPage() {
     } catch { /* */ }
   }
 
+  const handleDelete = async (runId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm('确定删除此评估报告？')) return
+    try {
+      await deleteEvalRun(runId)
+      if (selectedRun === runId) {
+        setSelectedRun(null)
+        setDetailData(null)
+      }
+      await loadRuns()
+    } catch (err) {
+      alert('删除失败: ' + (err as Error).message)
+    }
+  }
+
   // Group latest runs by strategy for comparison table
   const latestByStrategy: Record<string, EvalRunInfo> = {}
   for (const r of runs) {
@@ -207,6 +222,19 @@ export default function EvalPage() {
                 <span style={{ fontSize: 11, color: '#94a3b8' }}>
                   {r.completed_at ? new Date(r.completed_at).toLocaleDateString() : 'running...'}
                 </span>
+                <button
+                  onClick={(e) => handleDelete(r.id, e)}
+                  style={{
+                    marginLeft: 'auto', background: 'none', border: 'none',
+                    color: '#cbd5e1', cursor: 'pointer', fontSize: 16,
+                    padding: '0 4px', lineHeight: 1,
+                  }}
+                  title="删除评估报告"
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#ef4444')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#cbd5e1')}
+                >
+                  x
+                </button>
               </div>
             </div>
           ))}

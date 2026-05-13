@@ -276,6 +276,13 @@ Score:"""
         except ValueError:
             return 0.0
 
+    def delete_run(self, run_id: str) -> bool:
+        """删除指定评估运行及其所有结果"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM eval_results WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM eval_runs WHERE id = ?", (run_id,))
+            return conn.total_changes > 0
+
     def get_runs(self) -> list[dict]:
         """
         获取所有评估运行列表

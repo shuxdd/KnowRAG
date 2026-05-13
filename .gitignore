@@ -32,13 +32,23 @@ node_modules/
 .streamlit/secrets.toml
 
 # Claude Code artifacts
-.claude/worktrees/
+.claude/
 .superpowers/
 
-# Local Claude Code settings (user-specific, may contain permissions)
-.claude/settings.local.json
+# Docs plans (generated)
+docs/superpowers/
 
 # Distribution
 dist/
 build/
 *.egg-info/
+
+# Frontend build
+frontend/dist/
+
+# Tests
+tests/
+
+# Alembic migrations
+alembic/
+alembic.ini

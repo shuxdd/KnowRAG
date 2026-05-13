@@ -68,6 +68,14 @@ async def get_eval_run(run_id: str):
     )
 
 
+@router.delete("/results/{run_id}")
+async def delete_eval_run(run_id: str):
+    deleted = eval_service.delete_run(run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Evaluation run not found")
+    return {"detail": f"Evaluation run {run_id} deleted"}
+
+
 @router.post("/run")
 async def trigger_eval(req: EvalRunRequest):
     """

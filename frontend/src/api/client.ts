@@ -32,6 +32,19 @@ export interface UploadResponse {
   chunks_count: number
 }
 
+export interface BatchUploadResult {
+  doc_id?: string
+  filename: string
+  chunks_count?: number
+  status: 'ok' | 'error'
+  error?: string
+}
+
+export interface BatchUploadResponse {
+  results: BatchUploadResult[]
+  total: number
+}
+
 export interface DocumentInfo {
   doc_id: string
   filename: string
@@ -53,6 +66,16 @@ export async function uploadDocument(file: File): Promise<UploadResponse> {
   return data
 }
 
+export async function uploadDocuments(files: File[]): Promise<BatchUploadResponse> {
+  const formData = new FormData()
+  files.forEach((file) => formData.append('files', file))
+  const { data } = await api.post<BatchUploadResponse>('/documents/upload/batch', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000, // 5 minutes for batch
+  })
+  return data
+}
+
 export async function listDocuments(): Promise<DocumentListResponse> {
   const { data } = await api.get<DocumentListResponse>('/documents')
   return data
@@ -60,6 +83,41 @@ export async function listDocuments(): Promise<DocumentListResponse> {
 
 export async function deleteDocument(docId: string): Promise<void> {
   await api.delete(`/documents/${encodeURIComponent(docId)}`)
+}
+
+export async function deleteAllDocuments(): Promise<{ detail: string }> {
+  const { data } = await api.delete<{ detail: string }>('/documents')
+  return data
+}
+
+// === Chunk Preview ===
+
+export interface LeafChunkPreview {
+  chunk_index: number
+  char_count: number
+  preserve: boolean
+  undersized: boolean
+  content_preview: string
+}
+
+export interface ParentChunkPreview {
+  id: string
+  heading_path: string[]
+  char_count: number
+  page_start: number | null
+  page_end: number | null
+  content_preview: string
+  leaves: LeafChunkPreview[]
+}
+
+export interface ChunkPreviewResponse {
+  filename: string
+  parents: ParentChunkPreview[]
+}
+
+export async function getDocumentChunks(docId: string): Promise<ChunkPreviewResponse> {
+  const { data } = await api.get<ChunkPreviewResponse>(`/documents/${encodeURIComponent(docId)}/chunks`)
+  return data
 }
 
 export async function askQuestion(
@@ -243,6 +301,10 @@ export async function listEvalRuns(): Promise<EvalListResponse> {
 export async function getEvalRun(runId: string): Promise<EvalRunDetail> {
   const { data } = await api.get<EvalRunDetail>(`/eval/results/${runId}`)
   return data
+}
+
+export async function deleteEvalRun(runId: string): Promise<void> {
+  await api.delete(`/eval/results/${encodeURIComponent(runId)}`)
 }
 
 export async function triggerEval(strategy: string = 'all'): Promise<{ run_id: string }> {
