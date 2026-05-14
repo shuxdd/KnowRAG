@@ -157,6 +157,29 @@ class EvalListResponse(BaseModel):
     runs: list[EvalRunInfo]  # 评估运行列表
 
 
+# ==================== 认证模型 ====================
+
+class AuthRegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_]+$")
+    password: str = Field(..., min_length=4, max_length=128)
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+
+class AuthUserResponse(BaseModel):
+    id: int
+    username: str
+    created_at: str
+
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
 # ==================== 分块预览模型 ====================
 
 class LeafChunkPreview(BaseModel):
