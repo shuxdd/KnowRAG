@@ -1,9 +1,10 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import documents, qa, eval, auth_router
+from backend.utils.auth import get_current_user
 
 # 创建 FastAPI 应用实例
 app = FastAPI(
@@ -64,10 +65,10 @@ app.add_middleware(
 )
 
 # 注册各模块的路由
-app.include_router(auth_router.router)  # 认证路由（公开）
-app.include_router(documents.router)  # 文档管理路由
-app.include_router(qa.router)         # 问答路由
-app.include_router(eval.router)        # 评估路由
+app.include_router(auth_router.router)  # 认证路由（公开，不需要 token）
+app.include_router(documents.router, dependencies=[Depends(get_current_user)])  # 文档管理路由 — 需认证
+app.include_router(qa.router, dependencies=[Depends(get_current_user)])         # 问答路由 — 需认证
+app.include_router(eval.router, dependencies=[Depends(get_current_user)])        # 评估路由 — 需认证
 
 
 @app.get("/api/health")

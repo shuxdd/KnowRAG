@@ -95,3 +95,23 @@ class TestMe:
     def test_me_without_token(self, client):
         resp = client.get("/api/auth/me")
         assert resp.status_code == 401
+
+
+class TestProtectedRoutes:
+    """Verify that protected routes require authentication."""
+
+    def test_qa_requires_auth(self, client):
+        resp = client.post("/api/qa/ask", json={"question": "test"})
+        assert resp.status_code == 401
+
+    def test_documents_requires_auth(self, client):
+        resp = client.get("/api/documents")
+        assert resp.status_code == 401
+
+    def test_eval_requires_auth(self, client):
+        resp = client.get("/api/eval/results")
+        assert resp.status_code == 401
+
+    def test_health_is_public(self, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
