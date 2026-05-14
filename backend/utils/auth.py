@@ -9,6 +9,12 @@ from backend.config import get_settings
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+if settings.jwt_secret == "dev-secret-change-in-production":
+    logger.warning(
+        "JWT_SECRET is using the default value. "
+        "Set JWT_SECRET in .env for production."
+    )
+
 SECRET_KEY = settings.jwt_secret
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.jwt_expire_minutes
@@ -34,9 +40,21 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
+class CurrentUser:
+    """Lightweight user object returned by get_current_user dependency.
+
+    Avoids returning a detached ORM object after the session closes.
+    """
+
+    def __init__(self, id: int, username: str, created_at):
+        self.id = id
+        self.username = username
+        self.created_at = created_at
+
+
 async def get_current_user(
     token: str | None = Depends(oauth2_scheme),
-) -> "UserORM":
+) -> CurrentUser:
     """FastAPI dependency: extract and validate JWT, return UserORM."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -61,4 +79,8 @@ async def get_current_user(
         user = session.query(UserORM).filter(UserORM.username == username).first()
         if user is None:
             raise credentials_exception
-        return user
+        return CurrentUser(
+            id=user.id,
+            username=user.username,
+            created_at=user.created_at,
+        )
