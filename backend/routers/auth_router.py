@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+# Dummy bcrypt hash used to prevent timing-based username enumeration on login.
+# When a user doesn't exist, we still run bcrypt verify to keep response timing constant.
+DUMMY_HASH = "$2b$12$pF.Qp0KPLYyhnClcRfKLiO97K2CHD1Qj5wWVk5tS9EV72Ua1p6Ftq"
+
 
 @router.post("/register", response_model=AuthUserResponse)
 async def register(req: AuthRegisterRequest):
@@ -54,7 +58,14 @@ async def login(req: AuthLoginRequest):
             .filter(UserORM.username == req.username)
             .first()
         )
-        if user is None or not verify_password(req.password, user.hashed_password):
+        if user is None:
+            # Do NOT reveal whether username exists — dummy-verify to prevent timing leak
+            verify_password(req.password, DUMMY_HASH)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+            )
+        if not verify_password(req.password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
