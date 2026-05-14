@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 
 const sidebarStyle: React.CSSProperties = {
   width: 220,
@@ -36,6 +37,7 @@ const mainStyle: React.CSSProperties = {
 }
 
 export default function Layout() {
+  const { username, logout } = useAuth()
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <nav style={sidebarStyle}>
@@ -70,6 +72,25 @@ export default function Layout() {
         >
           评估报告
         </NavLink>
+        <div style={{ marginTop: 'auto', padding: '16px 24px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+          <div style={{ color: '#ccd6f6', fontSize: 13, marginBottom: 8 }}>
+            {username}
+          </div>
+          <button
+            onClick={logout}
+            style={{
+              background: 'transparent',
+              border: '1px solid rgba(255,255,255,0.2)',
+              color: '#8892b0',
+              padding: '6px 16px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            退出登录
+          </button>
+        </div>
       </nav>
       <main style={mainStyle}><Outlet /></main>
     </div>
