@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router-dom'
 
 const sidebarStyle: React.CSSProperties = {
   width: 220,
@@ -35,7 +35,7 @@ const mainStyle: React.CSSProperties = {
   padding: '32px 40px',
 }
 
-export default function Layout({ children }: { children: React.ReactNode }) {
+export default function Layout() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <nav style={sidebarStyle}>
@@ -71,7 +71,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           评估报告
         </NavLink>
       </nav>
-      <main style={mainStyle}>{children}</main>
+      <main style={mainStyle}><Outlet /></main>
     </div>
   )
 }
