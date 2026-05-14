@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # ==================== HuggingFace 配置 ====================
     hf_endpoint: str = "https://hf-mirror.com"  # HuggingFace 镜像地址
 
+    # ==================== 认证配置 ====================
+    jwt_secret: str = "dev-secret-change-in-production"  # JWT 签名密钥
+    jwt_expire_minutes: int = 60 * 24  # Token 过期时间（默认 24 小时）
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
