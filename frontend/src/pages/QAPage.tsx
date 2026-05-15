@@ -193,6 +193,9 @@ export default function QAPage() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [agentMode, setAgentMode] = useState(false)
   const [toolStatus, setToolStatus] = useState('')
+  const [decomposePlan, setDecomposePlan] = useState('')
+  const [stepProgress, setStepProgress] = useState('')
+  const [reflectStatus, setReflectStatus] = useState('')
 
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -269,7 +272,7 @@ export default function QAPage() {
     const q = input.trim()
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setToolStatus(''); setStreaming(true)
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setToolStatus(''); setDecomposePlan(''); setStepProgress(''); setReflectStatus(''); setStreaming(true)
     const t0 = Date.now()
 
     await askAgentStream(
@@ -291,9 +294,15 @@ export default function QAPage() {
         setLastResponseTime(elapsed)
         setStreaming(false)
         setToolStatus('')
+        setDecomposePlan('')
+        setStepProgress('')
+        setReflectStatus('')
         loadSessions()
       },
       (err) => { alert('Agent error: ' + err.message); setStreaming(false); setToolStatus('') },
+      (msg) => setDecomposePlan(msg),
+      (msg) => setStepProgress(msg),
+      (msg) => setReflectStatus(msg),
     )
   }
 
@@ -394,6 +403,33 @@ export default function QAPage() {
                         fontSize: 12, fontWeight: 500,
                       }}>
                         {toolStatus}
+                      </div>
+                    )}
+                    {decomposePlan && (
+                      <div style={{
+                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
+                        background: '#dbeafe', color: '#1e40af',
+                        fontSize: 12, fontWeight: 500,
+                      }}>
+                        {decomposePlan}
+                      </div>
+                    )}
+                    {stepProgress && (
+                      <div style={{
+                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
+                        background: '#ede9fe', color: '#6d28d9',
+                        fontSize: 12, fontWeight: 500,
+                      }}>
+                        {stepProgress}
+                      </div>
+                    )}
+                    {reflectStatus && (
+                      <div style={{
+                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
+                        background: '#ffedd5', color: '#9a3412',
+                        fontSize: 12, fontWeight: 500,
+                      }}>
+                        {reflectStatus}
                       </div>
                     )}
                     {streamSources.length > 0 && streamText.length > 0 && (
