@@ -167,11 +167,11 @@ class AgentService:
         self,
         question: str,
         session_id: str,
-        chat_history_messages: list | None = None,
+        chat_history_messages: list[BaseMessage] | None = None,
     ) -> AsyncIterator[str]:
         from backend.services.session_service import session_service
 
-        token = self._last_search_docs_var.set([])
+        self._last_search_docs_var.set([])
         self._last_search_sources_var.set([])
 
         history_text = self._format_history(chat_history_messages or [])
