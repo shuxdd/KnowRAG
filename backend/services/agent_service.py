@@ -20,26 +20,27 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-SYSTEM_PROMPT = """You are an enterprise knowledge base assistant. You have access to tools:
+SYSTEM_PROMPT = """你是一个企业知识库助手。你可以使用以下工具来回答问题：
 
-- search_docs(query, strategy, top_k): Search the knowledge base for relevant document content.
-  Use this for factual questions about the knowledge base.
-  strategy: "fast" (quick), "precise" (hybrid), "deep" (thorough), "auto" (automatic, recommended).
-  top_k: number of results (1-20). Use 5 by default. More if the question is broad.
+- search_docs(query, strategy, top_k): 搜索知识库中的文档内容。
+  当用户询问知识库中的事实性问题时使用此工具。
+  query: 搜索关键词或问题
+  strategy: 检索策略。"fast"（快速关键词检索）、"precise"（混合检索）、"deep"（最全面的深度检索）、"auto"（自动选择，推荐）。
+  top_k: 返回结果数量（1-20），默认5，问题范围较广时可设大一些。
 
-- list_docs(): List all documents currently in the knowledge base.
-  Use this when the user asks what documents are available or what they can ask about.
+- list_docs(): 列出知识库中所有文档。
+  当用户问"有哪些文档"、"知识库里有什么"时使用此工具。
 
-- get_chunks(doc_id): View how a specific document is split into chunks.
-  Use this when the user asks about document structure or chunking.
+- get_chunks(doc_id): 查看某个文档的分段结构。
+  当用户询问文档的分段方式、分块结构时使用。
 
-Rules:
-- Greetings and casual chat: respond directly without tools.
-- For factual questions, ALWAYS use search_docs first.
-- If no relevant documents are found, honestly tell the user.
-- Cite document sources (filenames) in your answer when using search results.
-- Answer in the same language as the user's question.
-- Do NOT make up information not found in the search results."""
+规则：
+- 问候、闲聊、感谢：直接回应，不调用工具。
+- 知识库相关的问题：必须先调用 search_docs 检索。
+- 如果没有找到相关文档，诚实告知用户。
+- 回答时注明引用的文档来源（文件名）。
+- 始终用中文回答。
+- 不要编造检索结果中没有的信息。"""
 
 
 class AgentState(TypedDict):
@@ -67,11 +68,11 @@ class AgentService:
     # ---- Tool implementations ------------------------------------------------
 
     def _search_docs_impl(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
-        """Search the knowledge base for relevant document content."""
+        """搜索知识库中的文档内容。当用户询问事实性问题时使用此工具。"""
         docs = qa_service.search(query, strategy, top_k)
         self._last_search_docs_var.set(docs)
         if not docs:
-            return "No relevant documents found in the knowledge base."
+            return "知识库中未找到相关文档。"
 
         self._last_search_sources_var.set([
             Source(
@@ -84,30 +85,30 @@ class AgentService:
         return qa_service._build_context(docs)
 
     def _list_docs_impl(self) -> str:
-        """List all documents currently in the knowledge base."""
+        """列出知识库中的所有文档。当用户询问文档列表时使用。"""
         stats = vector_service.get_document_stats()
         if not stats:
-            return "No documents found in the knowledge base."
-        lines = ["Documents in knowledge base:"]
+            return "知识库中没有文档。"
+        lines = ["知识库中的文档:"]
         for s in stats:
-            lines.append(f"  - {s['filename']} ({s.get('chunks_count', 0)} chunks)")
+            lines.append(f"  - {s['filename']} ({s.get('chunks_count', 0)} 个分段)")
         return "\n".join(lines)
 
     def _get_chunks_impl(self, doc_id: str) -> str:
-        """View how a specific document is split into chunks."""
+        """查看指定文档的分段结构。当用户询问文档分块方式时使用。"""
         try:
             parents = parent_store.get_by_filename(doc_id)
             if not parents:
-                return f"Document not found: {doc_id}"
+                return f"未找到文档: {doc_id}"
         except Exception as e:
-            return f"Error looking up document {doc_id}: {e}"
+            return f"查询文档 {doc_id} 时出错: {e}"
 
-        lines = [f"Chunk preview for `{doc_id}`:"]
+        lines = [f"`{doc_id}` 的分段预览:"]
         for p in parents:
             heading = "/".join(p.heading_path)
             lines.append(
                 f"  [{p.id[:8]}...] {heading} "
-                f"(chars={len(p.content)}, pages={p.page_start}-{p.page_end})"
+                f"(字符数={len(p.content)}, 页码={p.page_start}-{p.page_end})"
             )
             try:
                 leaf_results = vector_service.collection.get(where={"parent_id": p.id})
@@ -116,9 +117,9 @@ class AgentService:
                     1 for m in (leaf_results.get("metadatas") or [])
                     if m and m.get("preserve")
                 )
-                lines.append(f"    {leaf_count} leaves ({preserved} preserved)")
+                lines.append(f"    {leaf_count} 个叶子块（{preserved} 个保留）")
             except Exception:
-                lines.append("    (leaf info unavailable)")
+                lines.append("    (叶子信息不可用)")
         return "\n".join(lines[:80])
 
     # ---- Graph construction --------------------------------------------------
@@ -194,7 +195,7 @@ class AgentService:
 
                 if kind == "on_tool_start":
                     tool_name = event.get("name", "unknown")
-                    yield f"data: {json.dumps({'type': 'tool', 'data': f'Using tool: {tool_name}...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool', 'data': f'调用工具: {tool_name}...'}, ensure_ascii=False)}\n\n"
 
                 if kind == "on_chat_model_stream":
                     chunk = event["data"]["chunk"]
@@ -205,7 +206,7 @@ class AgentService:
 
         except Exception as e:
             logger.error(f"Agent stream error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'data': f'Agent error: {str(e)}'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'data': f'Agent 错误: {str(e)}'}, ensure_ascii=False)}\n\n"
 
         # Push sources after streaming
         sources = self._last_search_sources_var.get()
