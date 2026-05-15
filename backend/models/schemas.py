@@ -12,6 +12,12 @@ class QuestionRequest(BaseModel):
     session_id: Optional[str] = None  # 会话 ID（V2新增，可选）
 
 
+class AgentRequest(BaseModel):
+    """Agent 问答请求模型 (V3)"""
+    question: str = Field(..., min_length=1, max_length=2000)
+    session_id: Optional[str] = None
+
+
 class Source(BaseModel):
     """文档来源信息"""
     content: str    # 来源文档的内容摘要

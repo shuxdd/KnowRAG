@@ -11,9 +11,11 @@ from backend.models.schemas import (
     SessionDetailResponse,
     MessageInfo,
     Source,
+    AgentRequest,
 )
 from backend.services.qa_service import qa_service
 from backend.services.session_service import session_service
+from backend.services.agent_service import agent_service
 
 # 创建 /api/qa 前缀的路由组
 router = APIRouter(prefix="/api/qa", tags=["qa"])
@@ -101,6 +103,33 @@ async def ask_stream(req: QuestionRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Session-Id": session_id,  # 返回新创建的会话 ID
+        },
+    )
+
+
+# === V3: Agent 流式问答接口 ===
+
+@router.post("/agent")
+async def ask_agent(req: AgentRequest):
+    """
+    Agent 流式问答接口 (V3)
+    使用 LangGraph Agent 自主决定检索策略和工具调用
+
+    SSE 事件: tool → token → sources → error (如发生) → done
+    """
+    session_id = req.session_id or session_service.create_session()
+    history = session_service.get_history(session_id)
+    return StreamingResponse(
+        agent_service.ask_stream(
+            question=req.question,
+            session_id=session_id,
+            chat_history_messages=history.messages if history else None,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Session-Id": session_id,
         },
     )
 
