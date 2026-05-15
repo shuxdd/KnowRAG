@@ -408,11 +408,18 @@ class MultiStepAgentService:
                                 tool_name = event.get("name", "unknown")
                                 yield f"data: {json.dumps({'type': 'tool', 'data': f'调用工具: {tool_name}...'}, ensure_ascii=False)}\n\n"
 
+                            if kind == "on_tool_end":
+                                output = event.get("data", {}).get("output", "")
+                                if isinstance(output, str) and output:
+                                    preview = output[:200].replace("\n", " ")
+                                    yield f"data: {json.dumps({'type': 'tool', 'data': f'工具返回 ({len(output)} 字符): {preview}...'}, ensure_ascii=False)}\n\n"
+
                             if kind == "on_chat_model_stream":
                                 chunk = event["data"]["chunk"]
                                 token = chunk.content if hasattr(chunk, "content") and chunk.content else None
                                 if token and not getattr(chunk, "tool_calls", None):
                                     sub_answer += token
+                                    yield f"data: {json.dumps({'type': 'thinking', 'data': token}, ensure_ascii=False)}\n\n"
 
                         sources = self._last_search_sources_var.get()
                         all_sources.extend(sources)

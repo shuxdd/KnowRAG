@@ -196,6 +196,8 @@ export default function QAPage() {
   const [decomposePlan, setDecomposePlan] = useState('')
   const [stepProgress, setStepProgress] = useState('')
   const [reflectStatus, setReflectStatus] = useState('')
+  const [thinkingText, setThinkingText] = useState('')
+  const [thinkingOpen, setThinkingOpen] = useState(true)
 
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -272,7 +274,7 @@ export default function QAPage() {
     const q = input.trim()
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setToolStatus(''); setDecomposePlan(''); setStepProgress(''); setReflectStatus(''); setStreaming(true)
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setToolStatus(''); setDecomposePlan(''); setStepProgress(''); setReflectStatus(''); setThinkingText(''); setThinkingOpen(true); setStreaming(true)
     const t0 = Date.now()
 
     await askAgentStream(
@@ -303,7 +305,10 @@ export default function QAPage() {
       (msg) => setDecomposePlan(msg),
       (msg) => setStepProgress(msg),
       (msg) => setReflectStatus(msg),
+      (t) => setThinkingText(p => p + t),
     )
+      // collapse thinking panel when done
+      setThinkingOpen(false)
   }
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -404,6 +409,27 @@ export default function QAPage() {
                       }}>
                         {toolStatus}
                       </div>
+                    )}
+                    {thinkingText && (
+                      <details open={thinkingOpen} style={{
+                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
+                        background: '#f8fafc', border: '1px solid #e2e8f0',
+                        fontSize: 12,
+                      }}>
+                        <summary style={{
+                          cursor: 'pointer', fontWeight: 600, color: '#475569',
+                          userSelect: 'none', marginBottom: 4,
+                        }}>
+                          查看思考过程 {!thinkingOpen && `(${thinkingText.length} 字)`}
+                        </summary>
+                        <div style={{
+                          maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap',
+                          color: '#64748b', lineHeight: 1.6,
+                          padding: '4px 0',
+                        }}>
+                          {thinkingText}
+                        </div>
+                      </details>
                     )}
                     {decomposePlan && (
                       <div style={{
