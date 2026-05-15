@@ -30,4 +30,3 @@ class TestAgentServiceInit:
             assert state_annotation == AgentState
         assert "messages" in AgentState.__annotations__
         assert "session_id" in AgentState.__annotations__
-        assert "final_answer" in AgentState.__annotations__

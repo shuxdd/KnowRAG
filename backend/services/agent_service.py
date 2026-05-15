@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 from typing import TypedDict, AsyncIterator
@@ -45,7 +46,6 @@ class AgentState(TypedDict):
     session_id: str
     question: str
     messages: list[BaseMessage]
-    final_answer: str
 
 
 class AgentService:
@@ -56,8 +56,12 @@ class AgentService:
             base_url=settings.qwen_base_url,
             temperature=0.3,
         )
-        self._last_search_docs: list[Document] = []
-        self._last_search_sources: list[Source] = []
+        self._last_search_docs_var: contextvars.ContextVar = contextvars.ContextVar(
+            "last_search_docs", default=[]
+        )
+        self._last_search_sources_var: contextvars.ContextVar = contextvars.ContextVar(
+            "last_search_sources", default=[]
+        )
         self.graph = self._build_graph()
 
     # ---- Tool implementations ------------------------------------------------
@@ -65,18 +69,18 @@ class AgentService:
     def _search_docs_impl(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
         """Search the knowledge base for relevant document content."""
         docs = qa_service.search(query, strategy, top_k)
-        self._last_search_docs = docs
+        self._last_search_docs_var.set(docs)
         if not docs:
             return "No relevant documents found in the knowledge base."
 
-        self._last_search_sources = [
+        self._last_search_sources_var.set([
             Source(
                 content=doc.page_content[:300],
                 filename=doc.metadata.get("filename", "unknown"),
                 score=round(doc.metadata.get("score", 0.0), 4),
             )
             for doc in docs
-        ]
+        ])
         return qa_service._build_context(docs)
 
     def _list_docs_impl(self) -> str:
@@ -148,7 +152,7 @@ class AgentService:
 
     # ---- Helpers -------------------------------------------------------------
 
-    def _format_history(self, messages: list) -> str:
+    def _format_history(self, messages: list[BaseMessage]) -> str:
         if not messages:
             return "(no history)"
         lines = []
@@ -167,8 +171,8 @@ class AgentService:
     ) -> AsyncIterator[str]:
         from backend.services.session_service import session_service
 
-        self._last_search_docs = []
-        self._last_search_sources = []
+        token = self._last_search_docs_var.set([])
+        self._last_search_sources_var.set([])
 
         history_text = self._format_history(chat_history_messages or [])
         initial_state: AgentState = {
@@ -180,7 +184,6 @@ class AgentService:
                     content=f"Chat history:\n{history_text}\n\nUser question: {question}"
                 ),
             ],
-            "final_answer": "",
         }
 
         full_answer = ""
@@ -205,8 +208,9 @@ class AgentService:
             yield f"data: {json.dumps({'type': 'error', 'data': f'Agent error: {str(e)}'}, ensure_ascii=False)}\n\n"
 
         # Push sources after streaming
-        if self._last_search_sources:
-            yield f"data: {json.dumps({'type': 'sources', 'data': [s.model_dump() for s in self._last_search_sources]}, ensure_ascii=False)}\n\n"
+        sources = self._last_search_sources_var.get()
+        if sources:
+            yield f"data: {json.dumps({'type': 'sources', 'data': [s.model_dump() for s in sources]}, ensure_ascii=False)}\n\n"
 
         # Persist conversation
         try:
@@ -214,7 +218,7 @@ class AgentService:
             session_service.add_message(
                 session_id, "assistant",
                 full_answer or "处理时出错",
-                [s.model_dump() for s in self._last_search_sources],
+                [s.model_dump() for s in sources],
             )
             session = session_service.get_session(session_id)
             if session and session.get("title") == "新对话":
