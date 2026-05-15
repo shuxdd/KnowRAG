@@ -198,7 +198,7 @@ export interface SessionDetailResponse {
 // === V2: SSE streaming ===
 
 export interface SSEEvent {
-  type: 'sources' | 'token' | 'done'
+  type: 'sources' | 'token' | 'tool' | 'error' | 'done'
   data: string | Source[]
 }
 
@@ -258,6 +258,71 @@ export async function askQuestionStream(
             }
           } catch {
             // skip parse errors for partial chunks
+          }
+        }
+      }
+    }
+  } catch (err) {
+    onError(err as Error)
+  }
+}
+
+export async function askAgentStream(
+  question: string,
+  sessionId: string | null,
+  onTool: (toolName: string) => void,
+  onToken: (token: string) => void,
+  onSources: (sources: Source[]) => void,
+  onDone: (newSessionId: string) => void,
+  onError: (error: Error) => void,
+): Promise<void> {
+  try {
+    const response = await fetch('/api/qa/agent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(localStorage.getItem('token')
+          ? { Authorization: `Bearer ${localStorage.getItem('token')}` }
+          : {}),
+      },
+      body: JSON.stringify({
+        question,
+        session_id: sessionId,
+      }),
+    })
+
+    const newSessionId = response.headers.get('X-Session-Id')
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('No response body')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event: SSEEvent = JSON.parse(line.slice(6))
+            if (event.type === 'tool') {
+              onTool(event.data as string)
+            } else if (event.type === 'token') {
+              onToken(event.data as string)
+            } else if (event.type === 'sources') {
+              onSources(event.data as Source[])
+            } else if (event.type === 'error') {
+              onError(new Error(event.data as string))
+            } else if (event.type === 'done') {
+              if (newSessionId) onDone(newSessionId)
+            }
+          } catch {
+            // skip parse errors
           }
         }
       }
