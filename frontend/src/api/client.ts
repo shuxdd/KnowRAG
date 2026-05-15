@@ -198,7 +198,7 @@ export interface SessionDetailResponse {
 // === V2: SSE streaming ===
 
 export interface SSEEvent {
-  type: 'sources' | 'token' | 'tool' | 'error' | 'done'
+  type: 'sources' | 'token' | 'tool' | 'error' | 'done' | 'decompose' | 'step' | 'reflect'
   data: string | Source[]
 }
 
@@ -275,6 +275,9 @@ export async function askAgentStream(
   onSources: (sources: Source[]) => void,
   onDone: (newSessionId: string) => void,
   onError: (error: Error) => void,
+  onDecompose?: (msg: string) => void,
+  onStep?: (msg: string) => void,
+  onReflect?: (msg: string) => void,
 ): Promise<void> {
   try {
     const response = await fetch('/api/qa/agent', {
@@ -312,6 +315,12 @@ export async function askAgentStream(
             const event: SSEEvent = JSON.parse(line.slice(6))
             if (event.type === 'tool') {
               onTool(event.data as string)
+            } else if (event.type === 'decompose') {
+              onDecompose?.(event.data as string)
+            } else if (event.type === 'step') {
+              onStep?.(event.data as string)
+            } else if (event.type === 'reflect') {
+              onReflect?.(event.data as string)
             } else if (event.type === 'token') {
               onToken(event.data as string)
             } else if (event.type === 'sources') {
