@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import {
-  askQuestionStream, listSessions, deleteSession, getSession,
+  askQuestionStream, askAgentStream, listSessions, deleteSession, getSession,
   Source, SessionInfo, MessageInfo,
 } from '../api/client'
 
@@ -191,6 +191,8 @@ export default function QAPage() {
   const [streamText, setStreamText] = useState('')
   const [streamSources, setStreamSources] = useState<Source[]>([])
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [agentMode, setAgentMode] = useState(false)
+  const [toolStatus, setToolStatus] = useState('')
 
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -229,6 +231,9 @@ export default function QAPage() {
   }
 
   const send = async () => {
+    if (agentMode) {
+      return sendAgent()
+    }
     if (!input.trim() || streaming) return
     const q = input.trim()
     setInput('')
@@ -256,6 +261,39 @@ export default function QAPage() {
         loadSessions()
       },
       (err) => { alert('请求失败: ' + err.message); setStreaming(false) },
+    )
+  }
+
+  const sendAgent = async () => {
+    if (!input.trim() || streaming) return
+    const q = input.trim()
+    setInput('')
+    setMessages(p => [...p, { role: 'user', content: q }])
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setToolStatus(''); setStreaming(true)
+    const t0 = Date.now()
+
+    await askAgentStream(
+      q, activeSid,
+      (toolName) => setToolStatus(toolName),
+      (t) => setStreamText(p => p + t),
+      (srcs) => { setStreamSources(srcs); streamSourcesRef.current = srcs },
+      (newId) => {
+        const elapsed = Date.now() - t0
+        const finalSources = streamSourcesRef.current
+        setStreamText(prev => {
+          setMessages(msgs => [...msgs, {
+            role: 'assistant', content: prev,
+            sources: finalSources.length > 0 ? finalSources : null,
+          }])
+          return ''
+        })
+        if (!activeSid) setActiveSid(newId)
+        setLastResponseTime(elapsed)
+        setStreaming(false)
+        setToolStatus('')
+        loadSessions()
+      },
+      (err) => { alert('Agent error: ' + err.message); setStreaming(false); setToolStatus('') },
     )
   }
 
@@ -349,6 +387,15 @@ export default function QAPage() {
                     ) : (
                       <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>思考中...</span>
                     )}
+                    {toolStatus && (
+                      <div style={{
+                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
+                        background: '#fef3c7', color: '#92400e',
+                        fontSize: 12, fontWeight: 500,
+                      }}>
+                        {toolStatus}
+                      </div>
+                    )}
                     {streamSources.length > 0 && streamText.length > 0 && (
                       <SourcesWidget msgIdx="stream" sources={streamSources} expandedKey={expanded} onToggle={setExpanded} />
                     )}
@@ -391,6 +438,19 @@ export default function QAPage() {
                     : `${(lastResponseTime / 1000).toFixed(1)}s`}
                 </span>
               )}
+              <button
+                onClick={() => setAgentMode(m => !m)}
+                title={agentMode ? 'Switch to normal' : 'Switch to Agent'}
+                style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                  cursor: 'pointer', border: 'none',
+                  background: agentMode ? '#ede9fe' : '#f1f5f9',
+                  color: agentMode ? '#6d28d9' : '#94a3b8',
+                  flexShrink: 0,
+                }}
+              >
+                {agentMode ? 'Agent' : 'Normal'}
+              </button>
             </div>
             <input
               ref={inputRef}
