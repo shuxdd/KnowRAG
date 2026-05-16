@@ -222,6 +222,74 @@ class TestSummarizeDocs:
         assert "无文档" in result
 
 
+class TestResolveTarget:
+    @patch("backend.services.agent_service.parent_store")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_resolve_by_doc_id(self, mock_llm, mock_parent_store):
+        """通过 doc_id 解析目标内容。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+        from backend.models.chunk_types import ParentChunk
+
+        mock_parent_store.get_by_ids.return_value = [
+            ParentChunk(
+                id="abc-123", content="测试内容。", filename="test.pdf",
+                heading_path=["章一"], page_start=1, page_end=2,
+            ),
+        ]
+
+        svc = MultiStepAgentService()
+        result = svc._resolve_target({"doc_id": "abc-123"})
+        assert "test.pdf" in result
+        assert "测试内容" in result
+
+    @patch("backend.services.agent_service.parent_store")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_resolve_by_doc_and_heading(self, mock_llm, mock_parent_store):
+        """通过 doc + heading 解析，委托给 _read_section_impl。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+        from backend.models.chunk_types import ParentChunk
+
+        mock_parent_store.get_by_filename.return_value = [
+            ParentChunk(
+                id="p1", content="章节内容。", filename="doc.pdf",
+                heading_path=["A", "B"], page_start=1, page_end=2,
+            ),
+        ]
+
+        svc = MultiStepAgentService()
+        result = svc._resolve_target({"doc": "doc.pdf", "heading": ["A", "B"]})
+        assert "doc.pdf" in result
+        assert "章节内容" in result
+
+    @patch("backend.services.agent_service.parent_store")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_resolve_by_doc_only(self, mock_llm, mock_parent_store):
+        """仅 doc 无 heading 时返回整个文档所有父块。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+        from backend.models.chunk_types import ParentChunk
+
+        mock_parent_store.get_by_filename.return_value = [
+            ParentChunk(
+                id="p1", content="第一节。", filename="doc.pdf",
+                heading_path=["一"], page_start=1, page_end=1,
+            ),
+            ParentChunk(
+                id="p2", content="第二节。", filename="doc.pdf",
+                heading_path=["二"], page_start=2, page_end=2,
+            ),
+        ]
+
+        svc = MultiStepAgentService()
+        result = svc._resolve_target({"doc": "doc.pdf"})
+        assert "doc.pdf" in result
+        assert "完整内容" in result
+        assert "第一节" in result
+        assert "第二节" in result
+
+
 class TestReadSection:
     @patch("backend.services.agent_service.parent_store")
     @patch("backend.services.agent_service.ChatOpenAI")

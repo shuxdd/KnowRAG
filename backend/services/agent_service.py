@@ -199,6 +199,38 @@ class MultiStepAgentService:
 
         return f"文档 `{doc_filename}` 中未找到与 '{' > '.join(heading_path)}' 相关的章节"
 
+    def _resolve_target(self, target: dict) -> str:
+        """解析 target 为文档内容字符串。
+
+        target 格式：
+        - {"doc_id": "parent_chunk_id"}  通过 ID 定位
+        - {"doc": "filename", "heading": ["路径"]}  委托给 _read_section_impl
+        - {"doc": "filename"}  返回整个文档
+        """
+        if "doc_id" in target:
+            parents = parent_store.get_by_ids([target["doc_id"]])
+            if not parents:
+                return f"未找到文档ID: {target['doc_id']}"
+            p = parents[0]
+            return (
+                f"`{p.filename}` / {' > '.join(p.heading_path)}\n"
+                f"(页码 {p.page_start}-{p.page_end})\n\n{p.content}"
+            )
+
+        doc_filename = target.get("doc", "")
+        heading = target.get("heading")
+
+        if heading:
+            return self._read_section_impl(doc_filename, heading)
+
+        parents = parent_store.get_by_filename(doc_filename)
+        if not parents:
+            return f"未找到文档: {doc_filename}"
+        parts = []
+        for p in parents:
+            parts.append(f"[{' > '.join(p.heading_path)}]\n{p.content}")
+        return f"`{doc_filename}` 完整内容：\n\n" + "\n\n".join(parts)
+
     # ---- Phase 1 ReAct 图（原封不动）----------------------------------------
 
     def _build_react_graph(self):
