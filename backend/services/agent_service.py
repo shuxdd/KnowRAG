@@ -175,7 +175,11 @@ class MultiStepAgentService:
 
     def _read_section_impl(self, doc_filename: str, heading_path: list[str]) -> str:
         """精读指定文档的某个章节。"""
-        parents = parent_store.get_by_filename(doc_filename)
+        try:
+            parents = parent_store.get_by_filename(doc_filename)
+        except Exception as e:
+            return f"查询文档 {doc_filename} 时出错: {e}"
+
         if not parents:
             return f"未找到文档: {doc_filename}"
 

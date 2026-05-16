@@ -290,3 +290,23 @@ class TestReadSection:
         assert "相近章节" in result
         assert "年假" in result
         assert "病假" in result
+
+    @patch("backend.services.agent_service.parent_store")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_read_section_no_match(self, mock_llm, mock_parent_store):
+        """父块存在但无任何 heading 匹配时返回未找到提示。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+        from backend.models.chunk_types import ParentChunk
+
+        mock_parent_store.get_by_filename.return_value = [
+            ParentChunk(
+                id="p1", content="内容...", filename="手册.pdf",
+                heading_path=["其他章节"], page_start=1, page_end=2,
+            ),
+        ]
+
+        svc = MultiStepAgentService()
+        result = svc._read_section_impl("手册.pdf", ["不存在的章节"])
+        assert "未找到" in result
+        assert "相关的章节" in result
