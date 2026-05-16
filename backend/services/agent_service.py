@@ -255,6 +255,50 @@ class MultiStepAgentService:
         response = self.llm.invoke([HumanMessage(content=prompt)])
         return response.content
 
+    def _search_with_feedback_impl(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
+        """带反馈循环的检索：检索→LLM评估→改写重搜，最多2轮。"""
+        docs = qa_service.search(query, strategy, top_k)
+        if not docs:
+            return "知识库中未找到相关文档。"
+
+        for round_num in range(2):
+            eval_prompt = f"""评估以下检索结果与查询的相关性。
+查询：{query}
+检索结果（前3条摘要）：
+{self._summarize_docs(docs[:3])}
+
+评分：1-5（5=完全相关，1=无关）
+如果评分 >= 4，输出 {{"satisfied": true}}。
+如果评分 < 4，输出 {{"satisfied": false, "rewritten_query": "改写后的查询"}}。"""
+
+            response = self.llm.invoke([HumanMessage(content=eval_prompt)])
+            try:
+                match = re.search(r'\{[\s\S]*\}', response.content)
+                result = json.loads(match.group(0)) if match else {"satisfied": True}
+            except Exception:
+                result = {"satisfied": True}
+
+            if result.get("satisfied"):
+                break
+
+            new_query = result.get("rewritten_query", query)
+            if round_num < 1:
+                new_docs = qa_service.search(new_query, strategy, top_k)
+                if new_docs:
+                    docs = new_docs
+
+        context = qa_service._build_context(docs)
+        self._last_search_docs_var.set(docs)
+        self._last_search_sources_var.set([
+            Source(
+                content=doc.page_content[:300],
+                filename=doc.metadata.get("filename", "unknown"),
+                score=round(doc.metadata.get("score", 0.0), 4),
+            )
+            for doc in docs
+        ])
+        return f"检索完成，找到 {len(docs)} 篇相关文档。\n\n{context}"
+
     # ---- Phase 1 ReAct 图（原封不动）----------------------------------------
 
     def _build_react_graph(self):

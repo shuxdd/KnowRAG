@@ -438,3 +438,73 @@ class TestCompareDocs:
         assert "对比失败" in result
         # B 解析失败，should not call LLM
         mock_llm_instance.invoke.assert_not_called()
+
+
+class TestSearchWithFeedback:
+    @patch("backend.services.agent_service.qa_service")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_search_with_feedback_satisfied(self, mock_llm, mock_qa):
+        """首轮 LLM 评分满意时只检索一次。"""
+        mock_llm_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = '{"satisfied": true}'
+        mock_llm_instance.invoke.return_value = mock_response
+        mock_llm.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        from langchain_core.documents import Document
+
+        mock_qa.search.return_value = [
+            Document(page_content="相关文档内容。", metadata={"filename": "a.pdf", "score": 0.95}),
+        ]
+        mock_qa._build_context.return_value = "[Source 1: a.pdf]\n相关文档内容。"
+        mock_qa._extract_sources.return_value = []
+
+        svc = MultiStepAgentService()
+        result = svc._search_with_feedback_impl("测试查询")
+
+        assert mock_qa.search.call_count == 1
+        assert "相关文档内容" in result
+
+    @patch("backend.services.agent_service.qa_service")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_search_with_feedback_retry(self, mock_llm, mock_qa):
+        """首轮不满意时触发重搜。"""
+        mock_llm_instance = MagicMock()
+        mock_response_1 = MagicMock()
+        mock_response_1.content = '{"satisfied": false, "rewritten_query": "改写查询"}'
+        mock_response_2 = MagicMock()
+        mock_response_2.content = '{"satisfied": true}'
+        mock_llm_instance.invoke.side_effect = [mock_response_1, mock_response_2]
+        mock_llm.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        from langchain_core.documents import Document
+
+        mock_qa.search.side_effect = [
+            [Document(page_content="不太相关。", metadata={"filename": "a.pdf", "score": 0.4})],
+            [Document(page_content="改写后相关结果。", metadata={"filename": "b.pdf", "score": 0.92})],
+        ]
+        mock_qa._build_context.return_value = "[Source 1: b.pdf]\n改写后相关结果。"
+        mock_qa._extract_sources.return_value = []
+
+        svc = MultiStepAgentService()
+        result = svc._search_with_feedback_impl("原始查询")
+
+        assert mock_qa.search.call_count == 2
+        assert "改写后相关结果" in result
+
+    @patch("backend.services.agent_service.qa_service")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_search_with_feedback_no_docs(self, mock_llm, mock_qa):
+        """搜索结果为空时直接返回提示。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+
+        mock_qa.search.return_value = []
+
+        svc = MultiStepAgentService()
+        result = svc._search_with_feedback_impl("无结果查询")
+
+        assert "未找到" in result
+        assert mock_qa.search.call_count == 1
