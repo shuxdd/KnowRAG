@@ -236,7 +236,7 @@ class MultiStepAgentService:
         content_a = self._resolve_target(target_a)
         content_b = self._resolve_target(target_b)
 
-        if content_a.startswith("未找到") or content_b.startswith("未找到"):
+        if not content_a.startswith("`") or not content_b.startswith("`"):
             return f"对比失败：\n- A: {content_a}\n- B: {content_b}"
 
         prompt = f"""对比以下两个文档/章节：

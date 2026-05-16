@@ -417,7 +417,8 @@ class TestCompareDocs:
     @patch("backend.services.agent_service.ChatOpenAI")
     def test_compare_docs_one_missing(self, mock_llm, mock_parent_store):
         """一个目标解析失败时返回错误信息。"""
-        mock_llm.return_value = MagicMock()
+        mock_llm_instance = MagicMock()
+        mock_llm.return_value = mock_llm_instance
         from backend.services.agent_service import MultiStepAgentService
         from backend.models.chunk_types import ParentChunk
 
@@ -435,4 +436,5 @@ class TestCompareDocs:
             {"doc_id": "missing"},
         )
         assert "对比失败" in result
-        assert "未找到" in result
+        # B 解析失败，should not call LLM
+        mock_llm_instance.invoke.assert_not_called()
