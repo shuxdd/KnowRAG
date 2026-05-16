@@ -336,6 +336,17 @@ class MultiStepAgentService:
             lines.append(f"子问题{i+1}：{r['sub_q']}\n回答：{answer}\n来源：{r.get('sources', [])}")
         return "\n\n".join(lines)
 
+    def _summarize_docs(self, docs: list) -> str:
+        """文档列表摘要，用于 LLM 评估相关性。"""
+        if not docs:
+            return "(无文档)"
+        lines = []
+        for i, doc in enumerate(docs):
+            filename = doc.metadata.get("filename", "unknown")
+            content_preview = doc.page_content[:150].replace("\n", " ")
+            lines.append(f"[{i+1}] {filename}: {content_preview}...")
+        return "\n".join(lines)
+
     # ---- 流式入口 -----------------------------------------------------------
 
     async def ask_stream(

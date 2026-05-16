@@ -190,3 +190,33 @@ class TestModuleSingleton:
         from backend.services.agent_service import agent_service, MultiStepAgentService
 
         assert isinstance(agent_service, MultiStepAgentService)
+
+
+class TestSummarizeDocs:
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_summarize_docs_normal(self, mock_llm):
+        """多个文档时返回带编号的摘要列表。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+
+        svc = MultiStepAgentService()
+        from langchain_core.documents import Document
+        docs = [
+            Document(page_content="这是第一段测试内容包含足够多的文字来展示摘要功能", metadata={"filename": "a.pdf", "score": 0.9}),
+            Document(page_content="第二段内容不同用于验证摘要截断", metadata={"filename": "b.pdf", "score": 0.7}),
+        ]
+        result = svc._summarize_docs(docs)
+        assert "[1]" in result
+        assert "a.pdf" in result
+        assert "[2]" in result
+        assert "b.pdf" in result
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_summarize_docs_empty(self, mock_llm):
+        """空列表返回无文档提示。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+
+        svc = MultiStepAgentService()
+        result = svc._summarize_docs([])
+        assert "无文档" in result
