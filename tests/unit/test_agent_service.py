@@ -378,3 +378,61 @@ class TestReadSection:
         result = svc._read_section_impl("手册.pdf", ["不存在的章节"])
         assert "未找到" in result
         assert "相关的章节" in result
+
+
+class TestCompareDocs:
+    @patch("backend.services.agent_service.parent_store")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_compare_docs_both_found(self, mock_llm, mock_parent_store):
+        """两个目标都解析成功时 LLM 返回对比结果。"""
+        mock_llm_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = "| 维度 | A | B |\n| 相同点 | x | x |\n| 不同点 | y | z |"
+        mock_llm_instance.invoke.return_value = mock_response
+        mock_llm.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        from backend.models.chunk_types import ParentChunk
+
+        mock_parent_store.get_by_ids.side_effect = [
+            [ParentChunk(
+                id="a1", content="A公司年假10天。", filename="A.pdf",
+                heading_path=["政策"], page_start=1, page_end=1,
+            )],
+            [ParentChunk(
+                id="b1", content="B公司年假15天。", filename="B.pdf",
+                heading_path=["政策"], page_start=1, page_end=1,
+            )],
+        ]
+
+        svc = MultiStepAgentService()
+        result = svc._compare_docs_impl(
+            {"doc_id": "a1"},
+            {"doc_id": "b1"},
+        )
+        assert "相同点" in result
+        assert "不同点" in result
+
+    @patch("backend.services.agent_service.parent_store")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_compare_docs_one_missing(self, mock_llm, mock_parent_store):
+        """一个目标解析失败时返回错误信息。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+        from backend.models.chunk_types import ParentChunk
+
+        mock_parent_store.get_by_ids.side_effect = [
+            [ParentChunk(
+                id="a1", content="内容A", filename="A.pdf",
+                heading_path=["政策"], page_start=1, page_end=1,
+            )],
+            [],  # B not found
+        ]
+
+        svc = MultiStepAgentService()
+        result = svc._compare_docs_impl(
+            {"doc_id": "a1"},
+            {"doc_id": "missing"},
+        )
+        assert "对比失败" in result
+        assert "未找到" in result

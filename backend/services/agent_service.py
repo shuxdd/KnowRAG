@@ -231,6 +231,30 @@ class MultiStepAgentService:
             parts.append(f"[{' > '.join(p.heading_path)}]\n{p.content}")
         return f"`{doc_filename}` 完整内容：\n\n" + "\n\n".join(parts)
 
+    def _compare_docs_impl(self, target_a: dict, target_b: dict) -> str:
+        """并排对比两个文档或章节。"""
+        content_a = self._resolve_target(target_a)
+        content_b = self._resolve_target(target_b)
+
+        if content_a.startswith("未找到") or content_b.startswith("未找到"):
+            return f"对比失败：\n- A: {content_a}\n- B: {content_b}"
+
+        prompt = f"""对比以下两个文档/章节：
+
+文档A: {content_a[:2000]}
+
+文档B: {content_b[:2000]}
+
+请按以下维度并排对比，用表格输出：
+1. 相同点
+2. 不同点
+3. 关键数据对比（如有）
+
+用中文回答，简洁清晰。"""
+
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content
+
     # ---- Phase 1 ReAct 图（原封不动）----------------------------------------
 
     def _build_react_graph(self):
