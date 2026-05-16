@@ -256,7 +256,11 @@ class MultiStepAgentService:
         return response.content
 
     def _search_with_feedback_impl(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
-        """带反馈循环的检索：检索→LLM评估→改写重搜，最多2轮。"""
+        """带反馈循环的检索：检索→LLM评估→改写重搜，最多2轮。
+
+        首轮检索后由 LLM 评估结果相关性（1-5 分），
+        评分不足时用 LLM 生成的 rewritten_query 重搜。
+        """
         docs = qa_service.search(query, strategy, top_k)
         if not docs:
             return "知识库中未找到相关文档。"
@@ -273,9 +277,10 @@ class MultiStepAgentService:
 
             response = self.llm.invoke([HumanMessage(content=eval_prompt)])
             try:
-                match = re.search(r'\{[\s\S]*\}', response.content)
+                match = re.search(r'\{[\s\S]*?\}', response.content)
                 result = json.loads(match.group(0)) if match else {"satisfied": True}
             except Exception:
+                logger.warning("LLM relevance evaluation failed, defaulting to satisfied")
                 result = {"satisfied": True}
 
             if result.get("satisfied"):

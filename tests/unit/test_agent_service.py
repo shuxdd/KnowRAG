@@ -497,8 +497,9 @@ class TestSearchWithFeedback:
     @patch("backend.services.agent_service.qa_service")
     @patch("backend.services.agent_service.ChatOpenAI")
     def test_search_with_feedback_no_docs(self, mock_llm, mock_qa):
-        """搜索结果为空时直接返回提示。"""
-        mock_llm.return_value = MagicMock()
+        """搜索结果为空时直接返回提示，不调用 LLM。"""
+        mock_llm_instance = MagicMock()
+        mock_llm.return_value = mock_llm_instance
         from backend.services.agent_service import MultiStepAgentService
 
         mock_qa.search.return_value = []
@@ -506,5 +507,6 @@ class TestSearchWithFeedback:
         svc = MultiStepAgentService()
         result = svc._search_with_feedback_impl("无结果查询")
 
-        assert "未找到" in result
         assert mock_qa.search.call_count == 1
+        assert "未找到" in result
+        mock_llm_instance.invoke.assert_not_called()
