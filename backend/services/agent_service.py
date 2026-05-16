@@ -29,15 +29,28 @@ SYSTEM_PROMPT = """你是一个企业知识库助手。你可以使用以下工�
   strategy: 检索策略。"fast"（快速关键词检索）、"precise"（混合检索）、"deep"（最全面的深度检索）、"auto"（自动选择，推荐）。
   top_k: 返回结果数量（1-20），默认5，问题范围较广时可设大一些。
 
+- search_with_feedback(query, strategy, top_k): 增强检索，自动评估结果质量并在不满足时改写重搜。
+  当你认为普通检索可能不够准确、需要更完整结果时使用。
+  参数同 search_docs。
+
 - list_docs(): 列出知识库中所有文档。
   当用户问"有哪些文档"、"知识库里有什么"时使用此工具。
 
 - get_chunks(doc_id): 查看某个文档的分段结构。
   当用户询问文档的分段方式、分块结构时使用。
 
+- read_section(doc_filename, heading_path): 精读文档的某个具体章节。
+  当用户询问某文档中某个章节的具体内容、需要查看原文详细内容时使用。
+  doc_filename: 文档文件名（如"员工手册.pdf"）
+  heading_path: 章节路径数组（如["休假政策", "年假"]）
+
+- compare_docs(target_a, target_b): 并排对比两个文档或章节。
+  当用户要求对比、比较两个文档、两段内容时使用。
+  target_a, target_b: 格式为 {"doc": "文件名", "heading": ["章节路径"]} 或 {"doc_id": "文档ID"}
+
 规则：
 - 问候、闲聊、感谢：直接回应，不调用工具。
-- 知识库相关的问题：必须先调用 search_docs 检索。
+- 知识库相关的问题：必须先调用 search_docs 或 search_with_feedback 检索。
 - 如果没有找到相关文档，诚实告知用户。
 - 回答时注明引用的文档来源（文件名）。
 - 始终用中文回答。
@@ -310,7 +323,10 @@ class MultiStepAgentService:
         search_tool = tool(self._search_docs_impl)
         list_tool = tool(self._list_docs_impl)
         chunks_tool = tool(self._get_chunks_impl)
-        tools = [search_tool, list_tool, chunks_tool]
+        read_section_tool = tool(self._read_section_impl)
+        compare_tool = tool(self._compare_docs_impl)
+        feedback_tool = tool(self._search_with_feedback_impl)
+        tools = [search_tool, list_tool, chunks_tool, read_section_tool, compare_tool, feedback_tool]
 
         llm_with_tools = self.llm.bind_tools(tools)
 

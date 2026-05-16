@@ -510,3 +510,25 @@ class TestSearchWithFeedback:
         assert mock_qa.search.call_count == 1
         assert "未找到" in result
         mock_llm_instance.invoke.assert_not_called()
+
+
+class TestToolRegistration:
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_all_six_tools_registered(self, mock_llm):
+        """react_graph 包含 6 个工具节点（3 旧 + 3 新）。"""
+        mock_llm.return_value = MagicMock()
+        from backend.services.agent_service import MultiStepAgentService
+
+        svc = MultiStepAgentService()
+        react_nodes = svc.react_graph.get_graph().nodes
+        assert "tools" in react_nodes
+
+        tool_node = react_nodes["tools"]
+        tool_names = set(tool_node.data.tools_by_name.keys())
+        assert "_search_docs_impl" in tool_names
+        assert "_list_docs_impl" in tool_names
+        assert "_get_chunks_impl" in tool_names
+        assert "_read_section_impl" in tool_names
+        assert "_compare_docs_impl" in tool_names
+        assert "_search_with_feedback_impl" in tool_names
+        assert len(tool_names) == 6
