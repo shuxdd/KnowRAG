@@ -173,6 +173,28 @@ class MultiStepAgentService:
                 lines.append("    (叶子信息不可用)")
         return "\n".join(lines[:80])
 
+    def _read_section_impl(self, doc_filename: str, heading_path: list[str]) -> str:
+        """精读指定文档的某个章节。"""
+        parents = parent_store.get_by_filename(doc_filename)
+        if not parents:
+            return f"未找到文档: {doc_filename}"
+
+        for p in parents:
+            if p.heading_path == heading_path:
+                return (
+                    f"`{doc_filename}` / {' > '.join(heading_path)}\n"
+                    f"(页码 {p.page_start}-{p.page_end})\n\n{p.content}"
+                )
+
+        candidates = [p for p in parents if any(h in p.heading_path for h in heading_path)]
+        if candidates:
+            lines = [f"未精确匹配 '{' > '.join(heading_path)}'，相近章节："]
+            for c in candidates[:5]:
+                lines.append(f"  - {' > '.join(c.heading_path)} ({len(c.content)} 字)")
+            return "\n".join(lines)
+
+        return f"文档 `{doc_filename}` 中未找到与 '{' > '.join(heading_path)}' 相关的章节"
+
     # ---- Phase 1 ReAct 图（原封不动）----------------------------------------
 
     def _build_react_graph(self):
