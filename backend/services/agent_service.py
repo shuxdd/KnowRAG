@@ -529,7 +529,8 @@ class MultiStepAgentService:
                 except json.JSONDecodeError:
                     pass
 
-            yield f"data: {json.dumps({'type': 'decompose', 'data': f'拆解为{len(sub_questions)}个子问题'}, ensure_ascii=False)}\n\n"
+            sub_qs_text = "\n".join(f"{idx}. {q}" for idx, q in enumerate(sub_questions, 1))
+            yield f"data: {json.dumps({'type': 'decompose', 'data': f'拆解为{len(sub_questions)}个子问题：\n{sub_qs_text}'}, ensure_ascii=False)}\n\n"
 
             # 2. 研究循环（可能伴随反思回环）
             reflection_count = 0
@@ -539,7 +540,7 @@ class MultiStepAgentService:
                 research_results: list[dict] = []
 
                 for i, sub_q in enumerate(sub_questions):
-                    yield f"data: {json.dumps({'type': 'step', 'data': f'正在处理 {i+1}/{len(sub_questions)}'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'step', 'data': f'正在处理 {i+1}/{len(sub_questions)}: {sub_q}'}, ensure_ascii=False)}\n\n"
 
                     try:
                         react_state: MultiStepState = {
