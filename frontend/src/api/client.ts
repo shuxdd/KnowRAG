@@ -199,7 +199,13 @@ export interface SessionDetailResponse {
 
 export interface SSEEvent {
   type: 'sources' | 'token' | 'tool' | 'error' | 'done' | 'decompose' | 'step' | 'reflect' | 'thinking'
-  data: string | Source[]
+  data: string | Source[] | SubQEventData
+}
+
+export interface SubQEventData {
+  sub_q: number
+  text: string
+  status?: string
 }
 
 export async function askQuestionStream(
@@ -270,15 +276,15 @@ export async function askQuestionStream(
 export async function askAgentStream(
   question: string,
   sessionId: string | null,
-  onTool: (toolName: string) => void,
+  onTool: (subQ: number, toolName: string) => void,
   onToken: (token: string) => void,
   onSources: (sources: Source[]) => void,
   onDone: (newSessionId: string) => void,
   onError: (error: Error) => void,
-  onDecompose?: (msg: string) => void,
-  onStep?: (msg: string) => void,
+  onDecompose?: (msg: string, subQuestions: string[]) => void,
+  onStep?: (subQ: number, text: string, status: string) => void,
   onReflect?: (msg: string) => void,
-  onThinking?: (token: string) => void,
+  onThinking?: (subQ: number, token: string) => void,
 ): Promise<void> {
   try {
     const response = await fetch('/api/qa/agent', {
@@ -315,15 +321,20 @@ export async function askAgentStream(
           try {
             const event: SSEEvent = JSON.parse(line.slice(6))
             if (event.type === 'tool') {
-              onTool(event.data as string)
+              const d = event.data as SubQEventData
+              onTool(d.sub_q, d.text)
             } else if (event.type === 'decompose') {
-              onDecompose?.(event.data as string)
+              const text = event.data as string
+              const subQs = text.split('\n').filter(l => /^\d+\./.test(l)).map(l => l.replace(/^\d+\.\s*/, ''))
+              onDecompose?.(text, subQs)
             } else if (event.type === 'step') {
-              onStep?.(event.data as string)
+              const d = event.data as SubQEventData
+              onStep?.(d.sub_q, d.text, d.status || 'running')
             } else if (event.type === 'reflect') {
               onReflect?.(event.data as string)
             } else if (event.type === 'thinking') {
-              onThinking?.(event.data as string)
+              const d = event.data as SubQEventData
+              onThinking?.(d.sub_q, d.text)
             } else if (event.type === 'token') {
               onToken(event.data as string)
             } else if (event.type === 'sources') {
