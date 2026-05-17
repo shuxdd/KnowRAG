@@ -475,10 +475,12 @@ class MultiStepAgentService:
         return "\n".join(lines)
 
     def _format_research_summary(self, results: list[dict]) -> str:
-        if not results:
+        if not results or all(r is None for r in results):
             return "(无检索结果)"
         lines = []
         for i, r in enumerate(results):
+            if r is None:
+                continue
             answer = r.get("answer", "检索失败")
             lines.append(f"子问题{i+1}：{r['sub_q']}\n回答：{answer}\n来源：{r.get('sources', [])}")
         return "\n\n".join(lines)
@@ -600,63 +602,40 @@ class MultiStepAgentService:
             max_reflections = 2
 
             while True:
-                research_results: list[dict] = []
+                research_results: list[dict] = [None] * len(sub_questions)
+                queue: asyncio.Queue = asyncio.Queue()
+                pending = len(sub_questions)
 
-                for i, sub_q in enumerate(sub_questions):
-                    yield f"data: {json.dumps({'type': 'step', 'data': f'正在处理 {i+1}/{len(sub_questions)}: {sub_q}'}, ensure_ascii=False)}\n\n"
-
+                async def producer(sub_q: str, idx: int):
+                    await queue.put(("step", idx, {"text": f"正在处理: {sub_q}", "status": "running"}))
                     try:
-                        react_state: MultiStepState = {
-                            "session_id": session_id,
-                            "question": sub_q,
-                            "chat_history": history_text,
-                            "messages": [
-                                SystemMessage(content=SYSTEM_PROMPT),
-                                HumanMessage(content=f"历史对话:\n{history_text}\n\n用户问题: {sub_q}"),
-                            ],
-                            "sub_questions": [],
-                            "current_step": 0,
-                            "research_results": [],
-                            "final_answer": "",
-                            "reflection_count": 0,
-                            "needs_refinement": False,
-                        }
-
-                        sub_answer = ""
-                        async for event in self.react_graph.astream_events(react_state, version="v2"):
-                            kind = event.get("event")
-
-                            if kind == "on_tool_start":
-                                tool_name = event.get("name", "unknown")
-                                yield f"data: {json.dumps({'type': 'tool', 'data': f'调用工具: {tool_name}...'}, ensure_ascii=False)}\n\n"
-
-                            if kind == "on_tool_end":
-                                output = event.get("data", {}).get("output", "")
-                                if isinstance(output, str) and output:
-                                    preview = output[:200].replace("\n", " ")
-                                    yield f"data: {json.dumps({'type': 'tool', 'data': f'工具返回 ({len(output)} 字符): {preview}...'}, ensure_ascii=False)}\n\n"
-
-                            if kind == "on_chat_model_stream":
-                                chunk = event["data"]["chunk"]
-                                token = chunk.content if hasattr(chunk, "content") and chunk.content else None
-                                if token and not getattr(chunk, "tool_calls", None):
-                                    sub_answer += token
-                                    yield f"data: {json.dumps({'type': 'thinking', 'data': token}, ensure_ascii=False)}\n\n"
-
-                        sources = self._last_search_sources_var.get()
-                        all_sources.extend(sources)
-                        research_results.append({
-                            "sub_q": sub_q,
-                            "answer": sub_answer or "检索未返回结果",
-                            "sources": [s.model_dump() for s in sources],
-                        })
+                        async for event in self._research_one_sub_q(sub_q, idx, session_id, history_text):
+                            await queue.put(event)
                     except Exception as e:
-                        logger.error(f"Sub-question research failed: {sub_q} — {e}")
-                        research_results.append({
-                            "sub_q": sub_q,
-                            "answer": "检索失败",
-                            "sources": [],
-                        })
+                        await queue.put(("__error__", idx, str(e)))
+
+                producers = [asyncio.create_task(producer(q, i)) for i, q in enumerate(sub_questions)]
+
+                while pending > 0:
+                    event = await queue.get()
+                    event_type, idx, data = event
+
+                    if event_type == "__result__":
+                        research_results[idx] = data
+                        pending -= 1
+                        srcs = data.get("sources", [])
+                        for s in srcs:
+                            all_sources.append(Source(**s))
+                        yield f"data: {json.dumps({'type': 'step', 'data': {'sub_q': idx, 'text': '完成', 'status': 'done'}}, ensure_ascii=False)}\n\n"
+                    elif event_type == "__error__":
+                        research_results[idx] = {"sub_q": sub_questions[idx], "answer": "检索失败", "sources": []}
+                        pending -= 1
+                    elif event_type == "step":
+                        yield f"data: {json.dumps({'type': 'step', 'data': {'sub_q': idx, 'text': data['text'], 'status': data['status']}}, ensure_ascii=False)}\n\n"
+                    elif event_type in ("tool", "thinking"):
+                        yield f"data: {json.dumps({'type': event_type, 'data': {'sub_q': idx, 'text': data}}, ensure_ascii=False)}\n\n"
+
+                await asyncio.gather(*producers)
 
                 # 3. 合成答案
                 results_text = self._format_research_summary(research_results)
