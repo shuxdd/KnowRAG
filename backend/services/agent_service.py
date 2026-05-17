@@ -494,6 +494,69 @@ class MultiStepAgentService:
             lines.append(f"[{i+1}] {filename}: {content_preview}...")
         return "\n".join(lines)
 
+    async def _research_one_sub_q(
+        self, sub_q: str, index: int, session_id: str, history_text: str
+    ):
+        """并行执行单个子问题的 ReAct 研究。
+
+        Yields 元组 ("tool"|"thinking", index, text) 供外层合并为 SSE。
+        最后 yield ("__result__", index, dict) 携带结果。
+        """
+        try:
+            self._last_search_docs_var.set([])
+            self._last_search_sources_var.set([])
+            react_state: MultiStepState = {
+                "session_id": session_id,
+                "question": sub_q,
+                "chat_history": history_text,
+                "messages": [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=f"历史对话:\n{history_text}\n\n用户问题: {sub_q}"),
+                ],
+                "sub_questions": [],
+                "current_step": 0,
+                "research_results": [],
+                "final_answer": "",
+                "reflection_count": 0,
+                "needs_refinement": False,
+            }
+
+            sub_answer = ""
+            async for event in self.react_graph.astream_events(react_state, version="v2"):
+                kind = event.get("event")
+
+                if kind == "on_tool_start":
+                    tool_name = event.get("name", "unknown")
+                    yield ("tool", index, f"调用工具: {tool_name}...")
+
+                if kind == "on_tool_end":
+                    output = event.get("data", {}).get("output", "")
+                    if isinstance(output, str) and output:
+                        preview = output[:200].replace("\n", " ")
+                        yield ("tool", index, f"工具返回 ({len(output)} 字符): {preview}...")
+
+                if kind == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"]
+                    token = chunk.content if hasattr(chunk, "content") and chunk.content else None
+                    if token and not getattr(chunk, "tool_calls", None):
+                        sub_answer += token
+                        yield ("thinking", index, token)
+
+            sources = self._last_search_sources_var.get()
+            result = {
+                "sub_q": sub_q,
+                "answer": sub_answer or "检索未返回结果",
+                "sources": [s.model_dump() for s in sources],
+            }
+            yield ("__result__", index, result)
+        except Exception as e:
+            logger.error(f"Sub-question research failed: {sub_q} — {e}")
+            yield ("__result__", index, {
+                "sub_q": sub_q,
+                "answer": "检索失败",
+                "sources": [],
+            })
+
     # ---- 流式入口 -----------------------------------------------------------
 
     async def ask_stream(
