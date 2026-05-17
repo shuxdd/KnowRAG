@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
+import json
 
 
 class TestMultiStepAgentServiceInit:
@@ -532,3 +533,225 @@ class TestToolRegistration:
         assert "_compare_docs_impl" in tool_names
         assert "_search_with_feedback_impl" in tool_names
         assert len(tool_names) == 6
+
+
+class TestSynthesizeStreaming:
+    """测试 ask_stream() synthesize 阶段的流式输出行为。"""
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_synthesize_streams_tokens(self, mock_llm_class):
+        """synthesize 阶段应通过 astream 逐 token 推送 SSE 事件。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+
+        # decompose 响应：简单问题，单子问题
+        dec_response = MagicMock()
+        dec_response.content = '{"complexity": "simple", "sub_questions": ["测试"]}'
+        # reflect 响应：通过
+        ref_response = MagicMock()
+        ref_response.content = '{"pass": true, "reason": "ok"}'
+        mock_llm_instance.invoke.side_effect = [dec_response, ref_response]
+
+        # astream 返回逐 token
+        async def mock_astream(messages):
+            for t in ["这", "是", "合成", "答案"]:
+                chunk = MagicMock()
+                chunk.content = t
+                yield chunk
+
+        mock_llm_instance.astream.side_effect = mock_astream
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        # mock ReAct graph 为空流（无子问题研究事件）
+        async def empty_astream_events(state, version=None):
+            if False:
+                yield
+        svc.react_graph.astream_events = empty_astream_events
+
+        async def collect():
+            events = []
+            async for e in svc.ask_stream("测试问题", "s1"):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        # 验证 astream 被调用（替代了 invoke 用于 synthesize）
+        mock_llm_instance.astream.assert_called_once()
+
+        # 验证 invoke 仅被调用 2 次（decompose + reflect，不含 synthesize）
+        assert mock_llm_instance.invoke.call_count == 2
+
+        # 提取 token 事件
+        token_events = [e for e in events if '"type": "token"' in e]
+        assert len(token_events) >= 1
+        # token 事件逐字符推送
+        all_tokens = ""
+        for te in token_events:
+            data = json.loads(te.split("data: ")[1])
+            all_tokens += data["data"]
+        assert "这是合成答案" == all_tokens
+
+        # 确认 done 事件存在（表明流程完整走完）
+        assert any('"type": "done"' in e for e in events)
+
+    @patch("backend.services.session_service.session_service")
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_synthesize_final_answer_used_in_reflect(self, mock_llm_class, mock_session):
+        """streaming 后 final_answer 被正确用于 reflect 和持久化。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+
+        dec_response = MagicMock()
+        dec_response.content = '{"complexity": "simple", "sub_questions": ["测试"]}'
+        ref_response = MagicMock()
+        ref_response.content = '{"pass": true, "reason": "ok"}'
+        mock_llm_instance.invoke.side_effect = [dec_response, ref_response]
+
+        async def mock_astream(messages):
+            for t in ["合成", "结果"]:
+                chunk = MagicMock()
+                chunk.content = t
+                yield chunk
+
+        mock_llm_instance.astream.side_effect = mock_astream
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def empty_astream_events(state, version=None):
+            if False:
+                yield
+        svc.react_graph.astream_events = empty_astream_events
+
+        async def collect():
+            events = []
+            async for e in svc.ask_stream("测试问题", "s1"):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        # 验证 final_answer 被正确累积
+        token_events = [e for e in events if '"type": "token"' in e]
+        all_tokens = ""
+        for te in token_events:
+            data = json.loads(te.split("data: ")[1])
+            all_tokens += data["data"]
+        assert all_tokens == "合成结果"
+
+        # 验证 final_answer 出现在某个 invoke 调用的提示词中（reflect 使用了它）
+        any_has_answer = any(
+            "合成结果" in str(msg.content)
+            for call in mock_llm_instance.invoke.call_args_list
+            for msg in call[0][0]
+            if hasattr(msg, "content")
+        )
+        assert any_has_answer, "final_answer should appear in reflect prompt"
+
+        # 验证 session_service.add_message 被调用，包含 final_answer
+        mock_session.add_message.assert_any_call(
+            "s1", "assistant", "合成结果", ANY
+        )
+
+        # 确认 done 事件存在
+        assert any('"type": "done"' in e for e in events)
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_synthesize_empty_response(self, mock_llm_class):
+        """astream 无 token 输出时流程不崩溃，正常结束。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+
+        dec_response = MagicMock()
+        dec_response.content = '{"complexity": "simple", "sub_questions": ["测试"]}'
+        ref_response = MagicMock()
+        ref_response.content = '{"pass": true, "reason": "ok"}'
+        mock_llm_instance.invoke.side_effect = [dec_response, ref_response]
+
+        # astream 返回空流（LLM 不输出任何 token）
+        async def empty_astream(messages):
+            if False:
+                yield
+        mock_llm_instance.astream.side_effect = empty_astream
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def empty_astream_events(state, version=None):
+            if False:
+                yield
+        svc.react_graph.astream_events = empty_astream_events
+
+        async def collect():
+            events = []
+            async for e in svc.ask_stream("测试问题", "s1"):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        # 确认 done 事件存在
+        assert any('"type": "done"' in e for e in events)
+        # reflect 事件正常
+        assert any('"type": "reflect"' in e for e in events)
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_synthesize_chunk_without_content(self, mock_llm_class):
+        """astream chunk 无 content 属性时不追加 token。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+
+        dec_response = MagicMock()
+        dec_response.content = '{"complexity": "simple", "sub_questions": ["测试"]}'
+        ref_response = MagicMock()
+        ref_response.content = '{"pass": true, "reason": "ok"}'
+        mock_llm_instance.invoke.side_effect = [dec_response, ref_response]
+
+        # astream：部分 chunk 无 content 或 content 为空
+        async def mock_astream(messages):
+            # chunk 无 content 属性
+            c1 = MagicMock(spec=[])  # no 'content' attr
+            yield c1
+            # chunk content 为空字符串
+            c2 = MagicMock()
+            c2.content = ""
+            yield c2
+            # 正常 token
+            c3 = MagicMock()
+            c3.content = "有效"
+            yield c3
+
+        mock_llm_instance.astream.side_effect = mock_astream
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def empty_astream_events(state, version=None):
+            if False:
+                yield
+        svc.react_graph.astream_events = empty_astream_events
+
+        async def collect():
+            events = []
+            async for e in svc.ask_stream("测试问题", "s1"):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        # 仅产生 1 个 token 事件（只有 c3 有效）
+        token_events = [e for e in events if '"type": "token"' in e]
+        assert len(token_events) == 1
+        assert '"data": "有效"' in token_events[0]
+        assert any('"type": "done"' in e for e in events)

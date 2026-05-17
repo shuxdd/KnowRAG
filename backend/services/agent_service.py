@@ -597,13 +597,15 @@ class MultiStepAgentService:
                 # 3. 合成答案
                 results_text = self._format_research_summary(research_results)
                 synth_prompt = SYNTHESIZE_PROMPT.format(question=question, results=results_text)
-                synth_response = self.llm.invoke([
+                final_answer = ""
+                async for chunk in self.llm.astream([
                     SystemMessage(content=synth_prompt),
                     HumanMessage(content="请综合以上子问题分析结果，生成完整回答。"),
-                ])
-                final_answer = synth_response.content
-
-                yield f"data: {json.dumps({'type': 'token', 'data': final_answer}, ensure_ascii=False)}\n\n"
+                ]):
+                    token = chunk.content if hasattr(chunk, "content") and chunk.content else ""
+                    if token:
+                        final_answer += token
+                        yield f"data: {json.dumps({'type': 'token', 'data': token}, ensure_ascii=False)}\n\n"
 
                 # 4. 自反思
                 reflect_prompt = REFLECT_PROMPT.format(
