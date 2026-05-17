@@ -192,12 +192,16 @@ export default function QAPage() {
   const [streamSources, setStreamSources] = useState<Source[]>([])
   const [expanded, setExpanded] = useState<string | null>(null)
   const [agentMode, setAgentMode] = useState(false)
-  const [toolStatus, setToolStatus] = useState('')
+  interface SubTask {
+    question: string
+    status: 'pending' | 'running' | 'done'
+    toolStatus: string
+    thinking: string
+    thinkingOpen: boolean
+  }
+  const [subTasks, setSubTasks] = useState<SubTask[]>([])
   const [decomposePlan, setDecomposePlan] = useState('')
-  const [stepProgress, setStepProgress] = useState('')
   const [reflectStatus, setReflectStatus] = useState('')
-  const [thinkingText, setThinkingText] = useState('')
-  const [thinkingOpen, setThinkingOpen] = useState(true)
 
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -221,7 +225,7 @@ export default function QAPage() {
   }
 
   const newChat = () => {
-    setActiveSid(null); setMessages([]); setStreamText(''); setCurrentRoute(''); setLastResponseTime(null)
+    setActiveSid(null); setMessages([]); setStreamText(''); setCurrentRoute(''); setLastResponseTime(null); setSubTasks([])
     setTimeout(() => inputRef.current?.focus(), 0)
   }
 
@@ -274,12 +278,14 @@ export default function QAPage() {
     const q = input.trim()
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setToolStatus(''); setDecomposePlan(''); setStepProgress(''); setReflectStatus(''); setThinkingText(''); setThinkingOpen(true); setStreaming(true)
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setSubTasks([]); setDecomposePlan(''); setReflectStatus(''); setStreaming(true)
     const t0 = Date.now()
 
     await askAgentStream(
       q, activeSid,
-      (toolName) => setToolStatus(toolName),
+      (subQ, toolName) => {
+        setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, toolStatus: toolName } : t))
+      },
       (t) => setStreamText(p => p + t),
       (srcs) => { setStreamSources(srcs); streamSourcesRef.current = srcs },
       (newId) => {
@@ -295,20 +301,30 @@ export default function QAPage() {
         if (!activeSid) setActiveSid(newId)
         setLastResponseTime(elapsed)
         setStreaming(false)
-        setToolStatus('')
+        setSubTasks([])
         setDecomposePlan('')
-        setStepProgress('')
         setReflectStatus('')
         loadSessions()
       },
-      (err) => { alert('Agent error: ' + err.message); setStreaming(false); setToolStatus('') },
-      (msg) => setDecomposePlan(msg),
-      (msg) => setStepProgress(msg),
+      (err) => { alert('Agent error: ' + err.message); setStreaming(false) },
+      (msg, subQuestions) => {
+        setDecomposePlan(msg)
+        setSubTasks(subQuestions.map(q => ({
+          question: q,
+          status: 'pending' as const,
+          toolStatus: '',
+          thinking: '',
+          thinkingOpen: true,
+        })))
+      },
+      (subQ, text, status) => {
+        setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, status: status as SubTask['status'], toolStatus: status === 'done' ? '' : t.toolStatus } : t))
+      },
       (msg) => setReflectStatus(msg),
-      (t) => setThinkingText(p => p + t),
+      (subQ, token) => {
+        setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, thinking: t.thinking + token } : t))
+      },
     )
-      // collapse thinking panel when done
-      setThinkingOpen(false)
   }
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -401,35 +417,69 @@ export default function QAPage() {
                     ) : (
                       <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>思考中...</span>
                     )}
-                    {toolStatus && (
+                    {/* SubTask 卡片 */}
+                    {subTasks.length > 0 && (
                       <div style={{
-                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
-                        background: '#fef3c7', color: '#92400e',
-                        fontSize: 12, fontWeight: 500,
+                        marginTop: 8,
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(${Math.min(subTasks.length, 3)}, 1fr)`,
+                        gap: 8,
                       }}>
-                        {toolStatus}
+                        {subTasks.map((st, i) => (
+                          <div key={i} style={{
+                            padding: '8px 10px',
+                            borderRadius: 6,
+                            border: '1px solid',
+                            borderColor: st.status === 'done' ? '#86efac' : st.status === 'running' ? '#fde68a' : '#e2e8f0',
+                            background: st.status === 'done' ? '#f0fdf4' : st.status === 'running' ? '#fefce8' : '#f8fafc',
+                            fontSize: 12,
+                            minWidth: 0,
+                          }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span>{st.status === 'done' ? '✓' : st.status === 'running' ? '●' : '○'}</span>
+                              <span style={{
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                color: st.status === 'done' ? '#166534' : st.status === 'running' ? '#854d0e' : '#94a3b8',
+                              }}>
+                                子问题{i + 1}
+                              </span>
+                            </div>
+                            <div style={{
+                              fontSize: 11, color: '#64748b',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }} title={st.question}>
+                              {st.question}
+                            </div>
+                            {st.toolStatus && (
+                              <div style={{
+                                marginTop: 4, fontSize: 10, color: '#92400e',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              }}>
+                                {st.toolStatus}
+                              </div>
+                            )}
+                            {st.thinking && (
+                              <details open={st.thinkingOpen} style={{ marginTop: 4 }}>
+                                <summary style={{
+                                  cursor: 'pointer', fontSize: 10, color: '#475569', fontWeight: 500,
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  setSubTasks(prev => prev.map((t, j) => j === i ? { ...t, thinkingOpen: !t.thinkingOpen } : t))
+                                }}>
+                                  思考过程 ({st.thinking.length} 字)
+                                </summary>
+                                <div style={{
+                                  maxHeight: 150, overflowY: 'auto', whiteSpace: 'pre-wrap',
+                                  fontSize: 10, color: '#94a3b8', marginTop: 2,
+                                }}>
+                                  {st.thinking}
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    )}
-                    {thinkingText && (
-                      <details open={thinkingOpen} style={{
-                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
-                        background: '#f8fafc', border: '1px solid #e2e8f0',
-                        fontSize: 12,
-                      }}>
-                        <summary style={{
-                          cursor: 'pointer', fontWeight: 600, color: '#475569',
-                          userSelect: 'none', marginBottom: 4,
-                        }}>
-                          查看思考过程 {!thinkingOpen && `(${thinkingText.length} 字)`}
-                        </summary>
-                        <div style={{
-                          maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap',
-                          color: '#64748b', lineHeight: 1.6,
-                          padding: '4px 0',
-                        }}>
-                          {thinkingText}
-                        </div>
-                      </details>
                     )}
                     {decomposePlan && (
                       <div style={{
@@ -438,15 +488,6 @@ export default function QAPage() {
                         fontSize: 12, fontWeight: 500,
                       }}>
                         {decomposePlan}
-                      </div>
-                    )}
-                    {stepProgress && (
-                      <div style={{
-                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
-                        background: '#ede9fe', color: '#6d28d9',
-                        fontSize: 12, fontWeight: 500,
-                      }}>
-                        {stepProgress}
                       </div>
                     )}
                     {reflectStatus && (
