@@ -755,3 +755,160 @@ class TestSynthesizeStreaming:
         assert len(token_events) == 1
         assert '"data": "有效"' in token_events[0]
         assert any('"type": "done"' in e for e in events)
+
+
+class TestParallelResearch:
+    """测试 _research_one_sub_q 和 ask_stream() 并行研究。"""
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_research_one_sub_q_yields_events(self, mock_llm_class):
+        """_research_one_sub_q 应 yield tool 和 thinking 事件，最后是 __result__。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def mock_events(state, version=None):
+            yield {"event": "on_tool_start", "name": "search_docs"}
+            tool_end = {"event": "on_tool_end", "data": {"output": "检索结果内容"}}
+            yield tool_end
+            chunk_data = {"event": "on_chat_model_stream", "data": {"chunk": MagicMock()}}
+            chunk_data["data"]["chunk"].content = "思考token"
+            chunk_data["data"]["chunk"].tool_calls = None
+            yield chunk_data
+
+        svc.react_graph.astream_events = mock_events
+
+        async def collect():
+            events = []
+            async for e in svc._research_one_sub_q("测试子问题", 0, "s1", ""):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        types = [e[0] for e in events]
+        assert "tool" in types
+        assert "thinking" in types
+        assert "__result__" in types
+        assert types[-1] == "__result__"
+        result = events[-1]
+        assert result[1] == 0
+        assert result[2]["sub_q"] == "测试子问题"
+        assert "answer" in result[2]
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_research_one_sub_q_handles_exception(self, mock_llm_class):
+        """_research_one_sub_q 内部异常时应返回检索失败标记。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def crashing_events(state, version=None):
+            raise RuntimeError("模拟错误")
+            yield
+
+        svc.react_graph.astream_events = crashing_events
+
+        async def collect():
+            events = []
+            async for e in svc._research_one_sub_q("失败子问题", 0, "s1", ""):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        assert len(events) == 1
+        assert events[0][0] == "__result__"
+        assert events[0][2]["answer"] == "检索失败"
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_research_one_sub_q_event_index_correct(self, mock_llm_class):
+        """_research_one_sub_q yield 的事件应携带正确的 index。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def mock_events(state, version=None):
+            yield {"event": "on_tool_start", "name": "search_docs"}
+
+        svc.react_graph.astream_events = mock_events
+
+        async def collect():
+            events = []
+            async for e in svc._research_one_sub_q("子问题2", 1, "s1", ""):
+                events.append(e)
+            return events
+
+        events = asyncio.run(collect())
+
+        tool_event = events[0]
+        assert tool_event[1] == 1
+        result_event = events[-1]
+        assert result_event[1] == 1
+
+    @patch("backend.services.agent_service.ChatOpenAI")
+    def test_parallel_research_all_results_collected(self, mock_llm_class):
+        """并行研究完成后 research_results 应包含所有子问题结果。"""
+        import asyncio
+
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+
+        from backend.services.agent_service import MultiStepAgentService
+        svc = MultiStepAgentService()
+
+        async def quick_result(sub_q, index, session_id, history_text):
+            yield ("__result__", index, {"sub_q": sub_q, "answer": f"答案{index}", "sources": []})
+
+        svc._research_one_sub_q = quick_result
+
+        queue: asyncio.Queue = asyncio.Queue()
+        pending = 3
+        sub_questions = ["q0", "q1", "q2"]
+        results = [None] * 3
+
+        async def producer(sub_q, idx):
+            try:
+                async for event in svc._research_one_sub_q(sub_q, idx, "s1", ""):
+                    await queue.put(event)
+            except Exception as e:
+                await queue.put(("__error__", idx, str(e)))
+
+        async def run():
+            producers = [asyncio.create_task(producer(q, i)) for i, q in enumerate(sub_questions)]
+
+            collect_pending = pending
+            while collect_pending > 0:
+                event = await queue.get()
+                event_type, idx, data = event
+                if event_type == "__result__":
+                    results[idx] = data
+                    collect_pending -= 1
+                elif event_type == "__error__":
+                    results[idx] = {"sub_q": sub_questions[idx], "answer": "检索失败", "sources": []}
+                    collect_pending -= 1
+
+            await asyncio.gather(*producers)
+            return results
+
+        results = asyncio.run(run())
+
+        assert None not in results
+        assert results[0]["sub_q"] == "q0"
+        assert results[1]["sub_q"] == "q1"
+        assert results[2]["sub_q"] == "q2"
+        assert results[0]["answer"] == "答案0"
+        assert results[1]["answer"] == "答案1"
+        assert results[2]["answer"] == "答案2"
