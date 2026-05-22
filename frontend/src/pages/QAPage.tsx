@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   askQuestionStream, askAgentStream, listSessions, deleteSession, getSession,
   Source, SessionInfo, MessageInfo,
@@ -107,6 +108,9 @@ const markdownStyles = {
   blockquote: { borderLeft: '3px solid var(--primary)', paddingLeft: 12, color: '#64748b', margin: '8px 0' } as React.CSSProperties,
   h3: { fontSize: 15, fontWeight: 600, margin: '10px 0 4px' } as React.CSSProperties,
   h4: { fontSize: 14, fontWeight: 600, margin: '8px 0 4px' } as React.CSSProperties,
+  table: { borderCollapse: 'collapse', width: '100%', margin: '8px 0', fontSize: 13 } as React.CSSProperties,
+  th: { border: '1px solid #e2e8f0', padding: '6px 10px', background: '#f1f5f9', textAlign: 'left', fontWeight: 600 } as React.CSSProperties,
+  td: { border: '1px solid #e2e8f0', padding: '6px 10px' } as React.CSSProperties,
 }
 
 // Sources
@@ -370,7 +374,7 @@ export default function QAPage() {
                   {msg.role === 'assistant' && <div style={avatar(false)}>AI</div>}
                   <div style={bubble(msg.role === 'user')}>
                     {msg.role === 'assistant' ? (
-                      <ReactMarkdown components={{
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
                         p: ({ children }) => <p style={markdownStyles.p}>{children}</p>,
                         ul: ({ children }) => <ul style={markdownStyles.ul}>{children}</ul>,
                         ol: ({ children }) => <ol style={markdownStyles.ol}>{children}</ol>,
@@ -381,6 +385,9 @@ export default function QAPage() {
                         blockquote: ({ children }) => <blockquote style={markdownStyles.blockquote}>{children}</blockquote>,
                         h3: ({ children }) => <h3 style={markdownStyles.h3}>{children}</h3>,
                         h4: ({ children }) => <h4 style={markdownStyles.h4}>{children}</h4>,
+                        table: ({ children }) => <table style={markdownStyles.table}>{children}</table>,
+                        th: ({ children }) => <th style={markdownStyles.th}>{children}</th>,
+                        td: ({ children }) => <td style={markdownStyles.td}>{children}</td>,
                       }}>
                         {msg.content}
                       </ReactMarkdown>
@@ -403,7 +410,7 @@ export default function QAPage() {
                   <div style={avatar(false)}>AI</div>
                   <div style={bubble(false)}>
                     {streamText ? (
-                      <ReactMarkdown components={{
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
                         p: ({ children }) => <p style={markdownStyles.p}>{children}</p>,
                         ul: ({ children }) => <ul style={markdownStyles.ul}>{children}</ul>,
                         ol: ({ children }) => <ol style={markdownStyles.ol}>{children}</ol>,
@@ -411,6 +418,9 @@ export default function QAPage() {
                         strong: ({ children }) => <strong style={markdownStyles.strong}>{children}</strong>,
                         code: ({ children }) => <code style={markdownStyles.code}>{children}</code>,
                         blockquote: ({ children }) => <blockquote style={markdownStyles.blockquote}>{children}</blockquote>,
+                        table: ({ children }) => <table style={markdownStyles.table}>{children}</table>,
+                        th: ({ children }) => <th style={markdownStyles.th}>{children}</th>,
+                        td: ({ children }) => <td style={markdownStyles.td}>{children}</td>,
                       }}>
                         {streamText}
                       </ReactMarkdown>

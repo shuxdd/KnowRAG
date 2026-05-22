@@ -1,3 +1,16 @@
+"""
+父块存储服务模块
+
+负责在 PostgreSQL 数据库中存储和管理父块（ParentChunk）数据。
+
+主要功能：
+- add(): 添加父块到数据库
+- get_by_ids(): 根据 ID 列表批量获取父块
+- get_by_filename(): 根据文件名获取该文件的所有父块
+- delete_by_ids(): 根据 ID 列表删除父块
+- delete_by_filename(): 根据文件名删除父块
+"""
+
 import uuid
 from backend.db import SessionFactory
 from backend.models.db_models import ParentChunkORM
@@ -5,10 +18,66 @@ from backend.models.chunk_types import ParentChunk
 
 
 class ParentStore:
+    """
+    父块存储服务
+
+    提供父块的 CRUD 操作，与 PostgreSQL 数据库交互。
+    """
+
     def __init__(self, session_factory):
         self._session_factory = session_factory
 
     def add(self, parents: list[ParentChunk]) -> None:
+        """
+        添加父块列表到数据库
+
+        Args:
+            parents: 父块对象列表
+        """
+
+    def get_by_ids(self, ids: list[str]) -> list[ParentChunk]:
+        """
+        根据 ID 列表批量获取父块
+
+        Args:
+            ids: 父块 ID 列表
+
+        Returns:
+            父块对象列表（按输入顺序）
+        """
+
+    def delete_by_ids(self, ids: list[str]) -> int:
+        """
+        根据 ID 列表删除父块
+
+        Args:
+            ids: 父块 ID 列表
+
+        Returns:
+            删除的父块数量
+        """
+
+    def get_by_filename(self, filename: str) -> list[ParentChunk]:
+        """
+        根据文件名获取该文件的所有父块
+
+        Args:
+            filename: 文件名
+
+        Returns:
+            父块对象列表
+        """
+
+    def delete_by_filename(self, filename: str) -> int:
+        """
+        根据文件名删除父块
+
+        Args:
+            filename: 文件名
+
+        Returns:
+            删除的父块数量
+        """
         with self._session_factory() as session:
             for p in parents:
                 orm = ParentChunkORM(
@@ -18,6 +87,7 @@ class ParentStore:
                     heading_path=p.heading_path,
                     page_start=p.page_start,
                     page_end=p.page_end,
+                    created_at=p.created_at,
                 )
                 session.add(orm)
             session.commit()
@@ -44,6 +114,7 @@ class ParentStore:
                     heading_path=r.heading_path,
                     page_start=r.page_start,
                     page_end=r.page_end,
+                    created_at=r.created_at,
                 )
                 for i in valid_ids if (r := id_map.get(i))
             ]
@@ -73,6 +144,7 @@ class ParentStore:
                     heading_path=r.heading_path,
                     page_start=r.page_start,
                     page_end=r.page_end,
+                    created_at=r.created_at,
                 )
                 for r in rows
             ]

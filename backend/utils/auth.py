@@ -1,3 +1,17 @@
+"""
+认证工具模块
+
+提供 JWT 认证相关的工具函数和依赖注入：
+- 密码哈希：hash_password(), verify_password()
+- Token 创建：create_access_token()
+- 用户获取：get_current_user()（FastAPI 依赖注入）
+
+安全特性：
+- 使用 bcrypt 进行密码哈希
+- JWT 令牌有时效性
+- 防御用户枚举攻击（登录时使用虚拟哈希）
+"""
+
 import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status

@@ -1,7 +1,34 @@
+"""
+Agent 服务模块
+
+基于 LangGraph 实现的多步推理 Agent，支持自主决策检索策略和工具调用。
+
+可用工具：
+- search_docs: 搜索知识库文档
+- search_with_feedback: 增强检索（自动评估质量并改写重搜）
+- list_docs: 列出知识库中的文档
+- get_chunks: 查看文档的分段结构
+- read_section: 精读文档的特定章节
+- compare_docs: 并排对比两个文档
+
+Agent 流程：
+1. 问题分析：判断问题复杂度，决定是否需要多步推理
+2. 子问题分解：将复杂问题拆解为多个可检索的子问题
+3. 分步检索：对每个子问题执行检索
+4. 质量反思：评估当前回答质量，决定是否需要补充检索
+5. 答案综合：整合所有子问题的答案生成完整回答
+
+特点：
+- 支持多轮对话上下文
+- 流式输出（SSE）
+- 自动工具选择
+"""
+
 import asyncio
 import contextvars
 import json
 import logging
+import os
 import re
 from typing import TypedDict, AsyncIterator
 
@@ -16,6 +43,7 @@ from backend.models.schemas import Source
 from backend.services.qa_service import qa_service
 from backend.services.vector_service import vector_service
 from backend.services.parent_store import parent_store
+from backend.services.session_service import session_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,37 +52,27 @@ settings = get_settings()
 SYSTEM_PROMPT = """你是一个企业知识库助手。你可以使用以下工具来回答问题：
 
 - search_docs(query, strategy, top_k): 搜索知识库中的文档内容。
-  当用户询问知识库中的事实性问题时使用此工具。
-  query: 搜索关键词或问题
-  strategy: 检索策略。"fast"（快速关键词检索）、"precise"（混合检索）、"deep"（最全面的深度检索）、"auto"（自动选择，推荐）。
-  top_k: 返回结果数量（1-20），默认5，问题范围较广时可设大一些。
+  这是你最主要的工具。遇到任何知识库相关问题都应先调用它。
+  query: 搜索关键词或问题。如果首次搜索结果不理想，换个角度改写 query 再搜。
+  strategy: "fast"（快速）/"precise"（混合）/"deep"（深度）/"auto"（自动，推荐）。
+  top_k: 返回数量（1-20），默认5，问题范围广时可增大。
 
-- search_with_feedback(query, strategy, top_k): 增强检索，自动评估结果质量并在不满足时改写重搜。
-  当你认为普通检索可能不够准确、需要更完整结果时使用。
-  参数同 search_docs。
+- list_docs(): 列出知识库中所有文档及章节数、页码范围等元信息。
+  当用户问"有哪些文档"、"知识库里有什么"、或需要了解文档概况时使用。
 
-- list_docs(): 列出知识库中所有文档。
-  当用户问"有哪些文档"、"知识库里有什么"时使用此工具。
-
-- get_chunks(doc_id): 查看某个文档的分段结构。
-  当用户询问文档的分段方式、分块结构时使用。
-
-- read_section(doc_filename, heading_path): 精读文档的某个具体章节。
-  当用户询问某文档中某个章节的具体内容、需要查看原文详细内容时使用。
-  doc_filename: 文档文件名（如"员工手册.pdf"）
-  heading_path: 章节路径数组（如["休假政策", "年假"]）
-
-- compare_docs(target_a, target_b): 并排对比两个文档或章节。
-  当用户要求对比、比较两个文档、两段内容时使用。
-  target_a, target_b: 格式为 {"doc": "文件名", "heading": ["章节路径"]} 或 {"doc_id": "文档ID"}
+- read_section(doc_filename, heading_path, query): 精读文档的某个章节。
+  当 search_docs 返回的结果不够详细、需要查看原文时使用。
+  doc_filename: 文档文件名（如"员工手册.pdf"）。
+  两种用法（二选一）：
+  1. heading_path: 按章节路径精确查找（如["休假政策", "年假"]）
+  2. query: 在文档内语义搜索（如"年假天数规定"），返回最相关章节
 
 规则：
-- 问候、闲聊、感谢：直接回应，不调用工具。
-- 知识库相关的问题：必须先调用 search_docs 或 search_with_feedback 检索。
-- 如果没有找到相关文档，诚实告知用户。
-- 回答时注明引用的文档来源（文件名）。
-- 始终用中文回答。
-- 不要编造检索结果中没有的信息。"""
+- 知识库问题必须先调 search_docs，结果不够时再调 read_section 补充。
+- 如果首次 search_docs 结果不理想，尝试改写 query 重新搜索，不要直接放弃。
+- 对比类问题：先 search_docs 获取相关文档，再多次 read_section 获取详细内容，最后自己推理对比。
+- 回答时注明引用的文档来源。
+- 始终用中文回答，不要编造检索结果中没有的信息。"""
 
 DECOMPOSE_PROMPT = """你是一个问题分析助手。分析用户的问题，判断其复杂度并拆解为子问题。
 
@@ -149,184 +167,152 @@ class MultiStepAgentService:
         return qa_service._build_context(docs)
 
     def _list_docs_impl(self) -> str:
-        """列出知识库中的所有文档。当用户询问文档列表时使用。"""
+        """列出知识库中的所有文档及元信息。当用户询问文档列表时使用。"""
         stats = vector_service.get_document_stats()
         if not stats:
             return "知识库中没有文档。"
-        lines = ["知识库中的文档:"]
+
+        lines = [f"共 {len(stats)} 个文档:"]
         for s in stats:
-            lines.append(f"  - {s['filename']} ({s.get('chunks_count', 0)} 个分段)")
+            filename = s["filename"]
+            ext = os.path.splitext(filename)[1] if "." in filename else ""
+            parents = parent_store.get_by_filename(filename)
+            chapter_count = len(parents)
+            page_range = ""
+            if parents:
+                pages = [p.page_start for p in parents if p.page_start]
+                if pages:
+                    page_range = f", 页码范围: {min(pages)}-{max(pages)}"
+            lines.append(
+                f"  - {filename} ({ext}  {s.get('chunks_count', 0)} 段, "
+                f"{chapter_count} 章{page_range})"
+            )
         return "\n".join(lines)
 
-    def _get_chunks_impl(self, doc_id: str) -> str:
-        """查看指定文档的分段结构。当用户询问文档分块方式时使用。"""
-        try:
-            parents = parent_store.get_by_filename(doc_id)
-            if not parents:
-                return f"未找到文档: {doc_id}"
-        except Exception as e:
-            return f"查询文档 {doc_id} 时出错: {e}"
+    def _read_section_impl(
+        self, doc_filename: str,
+        heading_path: list[str] | None = None,
+        query: str = "",
+    ) -> str:
+        """精读指定文档的某个章节。
 
-        lines = [f"`{doc_id}` 的分段预览:"]
-        for p in parents:
-            heading = "/".join(p.heading_path)
-            lines.append(
-                f"  [{p.id[:8]}...] {heading} "
-                f"(字符数={len(p.content)}, 页码={p.page_start}-{p.page_end})"
-            )
-            try:
-                leaf_results = vector_service.collection.get(where={"parent_id": p.id})
-                leaf_count = len(leaf_results.get("ids", []))
-                preserved = sum(
-                    1 for m in (leaf_results.get("metadatas") or [])
-                    if m and m.get("preserve")
-                )
-                lines.append(f"    {leaf_count} 个叶子块（{preserved} 个保留）")
-            except Exception:
-                lines.append("    (叶子信息不可用)")
-        return "\n".join(lines[:80])
-
-    def _read_section_impl(self, doc_filename: str, heading_path: list[str]) -> str:
-        """精读指定文档的某个章节。"""
+        两种模式：
+        - heading_path: 按章节路径精确匹配（如 ["休假政策", "年假"]）
+        - query: 在文档内语义搜索（如 "年假天数"），返回最相关的章节
+        """
         try:
             parents = parent_store.get_by_filename(doc_filename)
         except Exception as e:
+            logger.warning(f"parent_store lookup failed for '{doc_filename}': {e}")
             return f"查询文档 {doc_filename} 时出错: {e}"
 
         if not parents:
             return f"未找到文档: {doc_filename}"
 
-        for p in parents:
-            if p.heading_path == heading_path:
-                return (
-                    f"`{doc_filename}` / {' > '.join(heading_path)}\n"
-                    f"(页码 {p.page_start}-{p.page_end})\n\n{p.content}"
-                )
+        # Mode 1: exact heading path match
+        if heading_path:
+            for p in parents:
+                if p.heading_path == heading_path:
+                    return (
+                        f"`{doc_filename}` / {' > '.join(heading_path)}\n"
+                        f"(页码 {p.page_start}-{p.page_end})\n\n{p.content}"
+                    )
 
-        candidates = [p for p in parents if any(h in p.heading_path for h in heading_path)]
-        if candidates:
-            lines = [f"未精确匹配 '{' > '.join(heading_path)}'，相近章节："]
-            for c in candidates[:5]:
-                lines.append(f"  - {' > '.join(c.heading_path)} ({len(c.content)} 字)")
-            return "\n".join(lines)
+            candidates = [p for p in parents if any(h in p.heading_path for h in heading_path)]
+            if candidates:
+                lines = [f"未精确匹配 '{' > '.join(heading_path)}'，相近章节："]
+                for c in candidates[:5]:
+                    lines.append(f"  - {' > '.join(c.heading_path)} ({len(c.content)} 字)")
+                return "\n".join(lines)
 
-        return f"文档 `{doc_filename}` 中未找到与 '{' > '.join(heading_path)}' 相关的章节"
+            return f"文档 `{doc_filename}` 中未找到与 '{' > '.join(heading_path)}' 相关的章节"
 
-    def _resolve_target(self, target: dict) -> str:
-        """解析 target 为文档内容字符串。
-
-        target 格式：
-        - {"doc_id": "parent_chunk_id"}  通过 ID 定位
-        - {"doc": "filename", "heading": ["路径"]}  委托给 _read_section_impl
-        - {"doc": "filename"}  返回整个文档
-        """
-        if "doc_id" in target:
-            parents = parent_store.get_by_ids([target["doc_id"]])
-            if not parents:
-                return f"未找到文档ID: {target['doc_id']}"
-            p = parents[0]
-            return (
-                f"`{p.filename}` / {' > '.join(p.heading_path)}\n"
-                f"(页码 {p.page_start}-{p.page_end})\n\n{p.content}"
-            )
-
-        doc_filename = target.get("doc", "")
-        heading = target.get("heading")
-
-        if heading:
-            return self._read_section_impl(doc_filename, heading)
-
-        parents = parent_store.get_by_filename(doc_filename)
-        if not parents:
-            return f"未找到文档: {doc_filename}"
-        parts = []
-        for p in parents:
-            parts.append(f"[{' > '.join(p.heading_path)}]\n{p.content}")
-        return f"`{doc_filename}` 完整内容：\n\n" + "\n\n".join(parts)
-
-    def _compare_docs_impl(self, target_a: dict, target_b: dict) -> str:
-        """并排对比两个文档或章节。"""
-        content_a = self._resolve_target(target_a)
-        content_b = self._resolve_target(target_b)
-
-        if not content_a.startswith("`") or not content_b.startswith("`"):
-            return f"对比失败：\n- A: {content_a}\n- B: {content_b}"
-
-        prompt = f"""对比以下两个文档/章节：
-
-文档A: {content_a[:2000]}
-
-文档B: {content_b[:2000]}
-
-请按以下维度并排对比，用表格输出：
-1. 相同点
-2. 不同点
-3. 关键数据对比（如有）
-
-用中文回答，简洁清晰。"""
-
-        response = self.llm.invoke([HumanMessage(content=prompt)])
-        return response.content
-
-    def _search_with_feedback_impl(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
-        """带反馈循环的检索：检索→LLM评估→改写重搜，最多2轮。
-
-        首轮检索后由 LLM 评估结果相关性（1-5 分），
-        评分不足时用 LLM 生成的 rewritten_query 重搜。
-        """
-        docs = qa_service.search(query, strategy, top_k)
-        if not docs:
-            return "知识库中未找到相关文档。"
-
-        for round_num in range(2):
-            eval_prompt = f"""评估以下检索结果与查询的相关性。
-查询：{query}
-检索结果（前3条摘要）：
-{self._summarize_docs(docs[:3])}
-
-评分：1-5（5=完全相关，1=无关）
-如果评分 >= 4，输出 {{"satisfied": true}}。
-如果评分 < 4，输出 {{"satisfied": false, "rewritten_query": "改写后的查询"}}。"""
-
-            response = self.llm.invoke([HumanMessage(content=eval_prompt)])
+        # Mode 2: semantic search within document
+        if query:
             try:
-                match = re.search(r'\{[\s\S]*?\}', response.content)
-                result = json.loads(match.group(0)) if match else {"satisfied": True}
+                results = vector_service.collection.query(
+                    query_texts=[query],
+                    where={"filename": doc_filename},
+                    n_results=min(5, len(parents)),
+                )
+                if results["ids"] and results["ids"][0]:
+                    matched_parents: dict[str, int] = {}  # parent_id -> count
+                    for i, _doc_id in enumerate(results["ids"][0]):
+                        meta = results["metadatas"][0][i] if results["metadatas"] else {}
+                        pid = meta.get("parent_id", "")
+                        if pid:
+                            matched_parents[pid] = matched_parents.get(pid, 0) + 1
+
+                    # Sort parents by match count, take top 3
+                    sorted_pids = sorted(matched_parents, key=matched_parents.get, reverse=True)
+                    lines = [f"`{doc_filename}` 中与 '{query}' 最相关的章节:"]
+                    for pid in sorted_pids[:3]:
+                        p = next((p for p in parents if p.id == pid), None)
+                        if p:
+                            lines.append(
+                                f"\n[{' > '.join(p.heading_path)}]\n"
+                                f"(页码 {p.page_start}-{p.page_end})\n{p.content[:1500]}"
+                            )
+                    return "\n".join(lines)
             except Exception:
-                logger.warning("LLM relevance evaluation failed, defaulting to satisfied")
-                result = {"satisfied": True}
+                logger.warning(f"Within-document search failed for '{doc_filename}'", exc_info=True)
 
-            if result.get("satisfied"):
-                break
+        # Fallback: return document outline
+        lines = [f"`{doc_filename}` 的章节结构:"]
+        for p in parents[:20]:
+            heading = " > ".join(p.heading_path)
+            lines.append(f"  - {heading} (页码 {p.page_start}-{p.page_end}, {len(p.content)} 字)")
+        return "\n".join(lines)
 
-            new_query = result.get("rewritten_query", query)
-            if round_num < 1:
-                new_docs = qa_service.search(new_query, strategy, top_k)
-                if new_docs:
-                    docs = new_docs
+    # ---- Async timeout wrappers -----------------------------------------------
 
-        context = qa_service._build_context(docs)
-        self._last_search_docs_var.set(docs)
-        self._last_search_sources_var.set([
-            Source(
-                content=doc.page_content[:300],
-                filename=doc.metadata.get("filename", "unknown"),
-                score=round(doc.metadata.get("score", 0.0), 4),
+    TOOL_TIMEOUT = 30       # default timeout in seconds
+    TOOL_TIMEOUT_EXTENDED = 60  # for multi-round / LLM-calling tools
+
+    async def _run_with_timeout(self, func, timeout: int, error_msg: str, *args, **kwargs):
+        """Run a sync function in thread executor with timeout."""
+        try:
+            loop = asyncio.get_running_loop()
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: func(*args, **kwargs)),
+                timeout=timeout,
             )
-            for doc in docs
-        ])
-        return f"检索完成，找到 {len(docs)} 篇相关文档。\n\n{context}"
+        except asyncio.TimeoutError:
+            logger.warning(f"Tool timeout ({timeout}s): {func.__name__}")
+            return error_msg
 
-    # ---- Phase 1 ReAct 图（原封不动）----------------------------------------
+    async def _search_docs_async(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
+        """搜索知识库中的文档内容。当用户询问事实性问题时使用此工具。"""
+        return await self._run_with_timeout(
+            self._search_docs_impl, self.TOOL_TIMEOUT,
+            "错误：搜索超时，请尝试缩小查询范围。", query, strategy, top_k,
+        )
+
+    async def _list_docs_async(self) -> str:
+        """列出知识库中的所有文档及元信息。当用户询问文档列表时使用。"""
+        return await self._run_with_timeout(
+            self._list_docs_impl, self.TOOL_TIMEOUT,
+            "错误：获取文档列表超时。",
+        )
+
+    async def _read_section_async(
+        self, doc_filename: str,
+        heading_path: list[str] | None = None,
+        query: str = "",
+    ) -> str:
+        """精读指定文档的某个章节。支持章节路径匹配或语义搜索两种模式。"""
+        return await self._run_with_timeout(
+            self._read_section_impl, self.TOOL_TIMEOUT,
+            "错误：读取章节超时。", doc_filename, heading_path, query,
+        )
+
+    # ---- Phase 1 ReAct 图 ------------------------------------------------
 
     def _build_react_graph(self):
-        search_tool = tool(self._search_docs_impl)
-        list_tool = tool(self._list_docs_impl)
-        chunks_tool = tool(self._get_chunks_impl)
-        read_section_tool = tool(self._read_section_impl)
-        compare_tool = tool(self._compare_docs_impl)
-        feedback_tool = tool(self._search_with_feedback_impl)
-        tools = [search_tool, list_tool, chunks_tool, read_section_tool, compare_tool, feedback_tool]
+        search_tool = tool(self._search_docs_async)
+        list_tool = tool(self._list_docs_async)
+        read_section_tool = tool(self._read_section_async)
+        tools = [search_tool, list_tool, read_section_tool]
 
         llm_with_tools = self.llm.bind_tools(tools)
 
@@ -334,8 +320,16 @@ class MultiStepAgentService:
             response = llm_with_tools.invoke(state["messages"])
             return {"messages": [response]}
 
+        MAX_TOOL_ROUNDS = 10
+
         def _should_continue(state: MultiStepState) -> str:
             last = state["messages"][-1]
+            tool_calls = [
+                m for m in state["messages"]
+                if hasattr(m, "tool_calls") and m.tool_calls
+            ]
+            if len(tool_calls) >= MAX_TOOL_ROUNDS:
+                return END
             if hasattr(last, "tool_calls") and last.tool_calls:
                 return "tools"
             return END
@@ -465,14 +459,55 @@ class MultiStepAgentService:
 
     # ---- 辅助方法 -----------------------------------------------------------
 
-    def _format_history(self, messages: list[BaseMessage] | None) -> str:
+    def _format_history(self, session_id: str, messages: list[BaseMessage] | None) -> str:
         if not messages:
             return "(无历史对话)"
+
+        from backend.services.session_service import session_service
+
+        summary = session_service.get_summary(session_id)
         lines = []
-        for msg in messages[-10:]:
+        for msg in messages[-4:]:  # last 2 turns in full
             role = "用户" if msg.type == "human" else "助手"
             lines.append(f"{role}: {msg.content}")
-        return "\n".join(lines)
+        recent = "\n".join(lines)
+
+        if summary:
+            return f"[对话摘要]\n{summary}\n\n[最近对话]\n{recent}"
+        return recent
+
+    COMPRESS_PROMPT = (
+        "Summarize the following conversation in 2-3 sentences. "
+        "Keep key facts, decisions, entity names, and topics discussed. "
+        "Write in the same language as the conversation.\n\n"
+        "{input_text}\n\nSummary:"
+    )
+
+    def _maybe_compress(self, session_id: str):
+        msgs = session_service.get_messages(session_id)
+        if len(msgs) <= 10:
+            return
+        old_summary = session_service.get_summary(session_id)
+        old_lines = []
+        for msg in msgs[:-4]:
+            role = "用户" if msg.get("role") == "user" else "助手"
+            old_lines.append(f"{role}: {msg.get('content', '')}")
+        old_text = "\n".join(old_lines)
+        if not old_text:
+            return
+
+        input_text = old_text
+        if old_summary:
+            input_text = f"Previous summary: {old_summary}\n\nNew messages: {old_text}"
+
+        prompt = self.COMPRESS_PROMPT.format(input_text=input_text)
+        try:
+            response = self.llm.invoke(prompt)
+            new_summary = response.content.strip()
+            if new_summary:
+                session_service.update_summary(session_id, new_summary)
+        except Exception:
+            logger.warning("Agent conversation compression failed", exc_info=True)
 
     def _format_research_summary(self, results: list[dict]) -> str:
         if not results or all(r is None for r in results):
@@ -484,17 +519,6 @@ class MultiStepAgentService:
             answer = r.get("answer", "检索失败")
             lines.append(f"子问题{i+1}：{r['sub_q']}\n回答：{answer}\n来源：{r.get('sources', [])}")
         return "\n\n".join(lines)
-
-    def _summarize_docs(self, docs: list) -> str:
-        """文档列表摘要，用于 LLM 评估相关性。"""
-        if not docs:
-            return "(无文档)"
-        lines = []
-        for i, doc in enumerate(docs):
-            filename = doc.metadata.get("filename", "unknown")
-            content_preview = doc.page_content[:150].replace("\n", " ")
-            lines.append(f"[{i+1}] {filename}: {content_preview}...")
-        return "\n".join(lines)
 
     async def _research_one_sub_q(
         self, sub_q: str, index: int, session_id: str, history_text: str
@@ -572,7 +596,7 @@ class MultiStepAgentService:
         self._last_search_docs_var.set([])
         self._last_search_sources_var.set([])
 
-        history_text = self._format_history(chat_history_messages)
+        history_text = self._format_history(session_id, chat_history_messages)
         all_sources: list[Source] = []
         final_answer = ""
 
@@ -612,6 +636,7 @@ class MultiStepAgentService:
                         async for event in self._research_one_sub_q(sub_q, idx, session_id, history_text):
                             await queue.put(event)
                     except Exception as e:
+                        logger.error(f"Producer task crashed for sub_q[{idx}] '{sub_q}': {e}", exc_info=True)
                         await queue.put(("__error__", idx, str(e)))
 
                 producers = [asyncio.create_task(producer(q, i)) for i, q in enumerate(sub_questions)]
@@ -705,6 +730,7 @@ class MultiStepAgentService:
             if session and session.get("title") == "新对话":
                 title = question[:30] + ("..." if len(question) > 30 else "")
                 session_service.update_title(session_id, title)
+            self._maybe_compress(session_id)
         except Exception as e:
             logger.error(f"Failed to persist session: {e}")
 

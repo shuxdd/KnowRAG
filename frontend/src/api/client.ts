@@ -128,6 +128,7 @@ export interface ParentChunkPreview {
   char_count: number
   page_start: number | null
   page_end: number | null
+  created_at: string | null
   content_preview: string
   leaves: LeafChunkPreview[]
 }

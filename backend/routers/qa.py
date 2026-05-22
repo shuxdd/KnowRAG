@@ -1,3 +1,30 @@
+"""
+问答路由模块
+
+提供问答检索和会话管理接口。
+
+接口列表：
+- POST /api/qa/ask: 非流式问答（V1）
+- POST /api/qa/search: 文档检索（V1）
+- POST /api/qa/ask/stream: 流式问答（V2）
+- POST /api/qa/agent: Agent 流式问答（V3）
+- GET /api/qa/sessions: 获取会话列表（V2）
+- GET /api/qa/sessions/{session_id}: 获取会话详情（V2）
+- DELETE /api/qa/sessions/{session_id}: 删除会话（V2）
+
+检索策略：
+- fast: 快速检索，仅使用向量检索
+- precise: 精确检索，向量 + BM25 混合
+- deep: 深度检索，向量 + BM25 + HyDE + Rerank
+- auto: 自动选择策略（根据问题复杂度）
+- hybrid/hybrid_rerank: 与 precise/deep 等价
+
+会话管理：
+- 支持多轮对话
+- 自动保存对话历史
+- 流式返回答案（SSE 格式）
+"""
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from backend.models.schemas import (
@@ -17,7 +44,6 @@ from backend.services.qa_service import qa_service
 from backend.services.session_service import session_service
 from backend.services.agent_service import agent_service
 
-# 创建 /api/qa 前缀的路由组
 router = APIRouter(prefix="/api/qa", tags=["qa"])
 
 

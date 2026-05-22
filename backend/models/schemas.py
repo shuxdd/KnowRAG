@@ -1,194 +1,297 @@
-from pydantic import BaseModel, Field
+"""
+Pydantic 数据模型模块
+
+本模块定义所有 API 请求和响应使用的数据模型：
+- 问答相关: QuestionRequest, QuestionResponse, Source 等
+- 文档相关: UploadResponse, DocumentInfo, DocumentListResponse 等
+- 搜索相关: SearchRequest, SearchResponse, SearchResult 等
+- 会话相关: SessionInfo, SessionListResponse, SessionDetailResponse 等
+- 评估相关: EvalRunRequest, EvalRunInfo, EvalResultItem 等
+- 认证相关: AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse 等
+- 分块预览: ChunkPreviewResponse, ParentChunkPreview, LeafChunkPreview 等
+
+所有模型继承自 Pydantic 的 BaseModel，用于：
+- API 请求体验证
+- API 响应序列化
+- 自动生成 OpenAPI 文档
+"""
+
 from typing import Literal, Optional
 
+from pydantic import BaseModel, Field
 
-# ==================== V1: 基础问答和数据模型 ====================
 
 class QuestionRequest(BaseModel):
-    """问答请求模型"""
-    question: str = Field(..., min_length=1, max_length=2000)  # 问题内容，1-2000字符
-    strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"  # 检索策略
-    top_k: int = Field(default=5, ge=1, le=50)  # 返回的文档数量，1-50
-    session_id: Optional[str] = None  # 会话 ID（V2新增，可选）
+    """
+    问答请求模型
+
+    属性:
+        question: 用户问题（1-2000字符）
+        strategy: 检索策略（vector/hybrid/hybrid_rerank/fast/precise/deep/auto）
+        top_k: 返回结果数量（1-50，默认为5）
+        session_id: 会话 ID（可选，用于多轮对话）
+    """
+    question: str = Field(..., min_length=1, max_length=2000)
+    strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"
+    top_k: int = Field(default=5, ge=1, le=50)
+    session_id: Optional[str] = None
 
 
 class AgentRequest(BaseModel):
-    """Agent 问答请求模型 (V3)"""
+    """
+    Agent 问答请求模型
+
+    属性:
+        question: 用户问题（1-2000字符）
+        session_id: 会话 ID（可选）
+    """
     question: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[str] = None
 
 
 class Source(BaseModel):
-    """文档来源信息"""
-    content: str    # 来源文档的内容摘要
-    filename: str  # 来源文件名
-    score: float   # 相关性分数
+    """
+    文档来源模型
+
+    表示检索结果中的一条文档来源。
+
+    属性:
+        content: 文档内容片段（前300字符）
+        filename: 所属文件名
+        score: 相似度分数
+        heading_path: 标题路径
+    """
+    content: str
+    filename: str
+    score: float
     heading_path: list[str] | None = None
 
 
 class QuestionResponse(BaseModel):
-    """问答响应模型"""
-    answer: str              # LLM 生成的回答
-    sources: list[Source]   # 答案引用的文档来源列表
+    """
+    问答响应模型
+
+    属性:
+        answer: LLM 生成的回答
+        sources: 检索到的文档来源列表
+    """
+    answer: str
+    sources: list[Source]
 
 
 class SearchRequest(BaseModel):
-    """文档检索请求模型"""
-    query: str = Field(..., min_length=1, max_length=2000)  # 查询文本
-    strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"  # 检索策略
-    top_k: int = Field(default=5, ge=1, le=50)  # 返回结果数量
+    """
+    文档检索请求模型
+
+    属性:
+        query: 检索查询文本（1-2000字符）
+        strategy: 检索策略
+        top_k: 返回结果数量
+    """
+    query: str = Field(..., min_length=1, max_length=2000)
+    strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"
+    top_k: int = Field(default=5, ge=1, le=50)
 
 
 class SearchResult(BaseModel):
-    """单个检索结果"""
-    content: str   # 文档内容
-    filename: str  # 文件名
-    score: float   # 相关性分数
+    """
+    单条检索结果模型
+
+    属性:
+        content: 文档内容
+        filename: 文件名
+        score: 相似度分数
+    """
+    content: str
+    filename: str
+    score: float
 
 
 class SearchResponse(BaseModel):
-    """检索响应模型"""
-    results: list[SearchResult]  # 检索结果列表
+    """检索响应模型，包含多条检索结果"""
+    results: list[SearchResult]
 
 
 class UploadResponse(BaseModel):
     """文档上传响应模型"""
-    doc_id: str       # 文档 ID
-    filename: str     # 文件名
-    chunks_count: int # 分块数量
+    doc_id: str
+    filename: str
+    chunks_count: int
 
 
 class DocumentInfo(BaseModel):
     """文档信息模型"""
-    doc_id: str        # 文档 ID（实际为文件名）
-    filename: str      # 文件名
-    file_size: int     # 文件大小（字节）
-    chunks_count: int  # 分块数量
-    uploaded_at: str   # 上传时间（ISO 格式）
+    doc_id: str
+    filename: str
+    file_size: int
+    chunks_count: int
+    uploaded_at: str
 
 
 class DocumentListResponse(BaseModel):
     """文档列表响应模型"""
-    documents: list[DocumentInfo]  # 文档列表
+    documents: list[DocumentInfo]
 
 
 class ErrorResponse(BaseModel):
     """错误响应模型"""
-    detail: str  # 错误详情
+    detail: str
 
-
-# ==================== V2: 会话管理模型 ====================
 
 class SessionInfo(BaseModel):
-    """会话基本信息"""
-    id: str           # 会话 ID
-    title: str        # 会话标题
-    created_at: str   # 创建时间（ISO 格式）
-    updated_at: str   # 最后更新时间（ISO 格式）
-    message_count: int  # 消息数量
+    """
+    会话信息模型
+
+    属性:
+        id: 会话 ID
+        title: 会话标题
+        created_at: 创建时间
+        updated_at: 最后更新时间
+        message_count: 消息数量
+    """
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: int
 
 
 class SessionListResponse(BaseModel):
     """会话列表响应模型"""
-    sessions: list[SessionInfo]  # 会话列表
+    sessions: list[SessionInfo]
 
 
 class MessageInfo(BaseModel):
-    """消息信息模型"""
-    role: str                     # 消息角色（user/assistant）
-    content: str                  # 消息内容
-    sources: Optional[list[Source]] = None  # 关联的来源（可选）
-    created_at: str               # 创建时间（ISO 格式）
+    """
+    消息信息模型
+
+    属性:
+        role: 消息角色（user/assistant）
+        content: 消息内容
+        sources: 关联的来源列表
+        created_at: 创建时间
+    """
+    role: str
+    content: str
+    sources: Optional[list[Source]] = None
+    created_at: str
 
 
 class SessionDetailResponse(BaseModel):
     """会话详情响应模型"""
-    id: str                      # 会话 ID
-    title: str                   # 会话标题
-    messages: list[MessageInfo]  # 消息列表
+    id: str
+    title: str
+    messages: list[MessageInfo]
 
-
-# ==================== V3: 评估模型 ====================
 
 class EvalRunRequest(BaseModel):
-    """评估运行请求模型"""
-    strategy: Literal["all", "vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "all"  # 评估策略
+    """
+    评估运行请求模型
+
+    属性:
+        strategy: 评估策略（all/vector/hybrid/hybrid_rerank）
+    """
+    strategy: Literal["all", "vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "all"
 
 
 class EvalRunInfo(BaseModel):
-    """评估运行信息模型"""
-    id: str                      # 评估运行 ID
-    strategy: str                # 使用的检索策略
-    dataset_name: str            # 评估数据集名称
-    question_count: int          # 问题数量
-    started_at: str              # 开始时间（ISO 格式）
-    completed_at: Optional[str] = None  # 完成时间（可选）
-    avg_faithfulness: Optional[float] = None       # 平均忠实度
-    avg_context_recall: Optional[float] = None    # 平均上下文召回率
-    avg_context_precision: Optional[float] = None # 平均上下文精确率
-    avg_answer_correctness: Optional[float] = None # 平均答案正确性
-    avg_answer_accuracy: Optional[float] = None    # 平均答案准确率
+    """
+    评估运行信息模型
+
+    包含评估运行的基本信息和统计指标。
+    """
+    id: str
+    strategy: str
+    dataset_name: str
+    question_count: int
+    status: str
+    started_at: str
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+    avg_faithfulness: Optional[float] = None
+    avg_context_recall: Optional[float] = None
+    avg_context_precision: Optional[float] = None
+    avg_answer_correctness: Optional[float] = None
+    avg_answer_accuracy: Optional[float] = None
 
 
 class EvalResultItem(BaseModel):
-    """单个评估结果项"""
-    question: str                       # 问题
-    ground_truth: str                  # 标准答案
-    answer: str                        # 实际回答
-    contexts: list[str]                # 检索到的上下文列表
-    faithfulness: Optional[float] = None        # 忠实度
-    context_recall: Optional[float] = None     # 上下文召回率
-    context_precision: Optional[float] = None  # 上下文精确率
-    answer_correctness: Optional[float] = None # 答案正确性
-    answer_accuracy: Optional[float] = None    # 答案准确率
+    """
+    单条评估结果模型
+
+    包含单个问题的评估详情。
+    """
+    question: str
+    ground_truth: str
+    answer: str
+    strategy: Optional[str] = None
+    contexts: list[str]
+    faithfulness: Optional[float] = None
+    context_recall: Optional[float] = None
+    context_precision: Optional[float] = None
+    answer_correctness: Optional[float] = None
+    answer_accuracy: Optional[float] = None
 
 
 class EvalRunDetail(BaseModel):
-    """评估运行详情模型"""
-    id: str                      # 评估运行 ID
-    strategy: str                # 检索策略
-    dataset_name: str            # 数据集名称
-    started_at: str              # 开始时间
-    completed_at: Optional[str] = None  # 完成时间
-    avg_faithfulness: Optional[float] = None       # 平均忠实度
-    avg_context_recall: Optional[float] = None    # 平均召回率
-    avg_context_precision: Optional[float] = None # 平均精确率
-    avg_answer_correctness: Optional[float] = None # 平均正确性
-    avg_answer_accuracy: Optional[float] = None    # 平均准确率
-    results: list[EvalResultItem]  # 所有问题的评估结果
+    """评估运行详情模型，包含所有单条评估结果"""
+    id: str
+    strategy: str
+    dataset_name: str
+    status: str
+    started_at: str
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+    avg_faithfulness: Optional[float] = None
+    avg_context_recall: Optional[float] = None
+    avg_context_precision: Optional[float] = None
+    avg_answer_correctness: Optional[float] = None
+    avg_answer_accuracy: Optional[float] = None
+    results: list[EvalResultItem]
 
 
 class EvalListResponse(BaseModel):
-    """评估列表响应模型"""
-    runs: list[EvalRunInfo]  # 评估运行列表
+    """评估运行列表响应模型"""
+    runs: list[EvalRunInfo]
 
-
-# ==================== 认证模型 ====================
 
 class AuthRegisterRequest(BaseModel):
+    """
+    用户注册请求模型
+
+    属性:
+        username: 用户名（3-50字符，只能包含字母、数字、下划线）
+        password: 密码（4-128字符）
+    """
     username: str = Field(..., min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_]+$")
     password: str = Field(..., min_length=4, max_length=128)
 
 
 class AuthLoginRequest(BaseModel):
+    """用户登录请求模型"""
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
 
 
 class AuthUserResponse(BaseModel):
+    """用户信息响应模型"""
     id: int
     username: str
     created_at: str
 
 
 class AuthTokenResponse(BaseModel):
+    """认证令牌响应模型"""
     access_token: str
     token_type: str = "bearer"
 
 
-# ==================== 分块预览模型 ====================
-
 class LeafChunkPreview(BaseModel):
+    """
+    叶子块预览模型
+
+    用于文档分块预览界面的叶子块信息。
+    """
     chunk_index: int
     char_count: int
     preserve: bool
@@ -197,15 +300,22 @@ class LeafChunkPreview(BaseModel):
 
 
 class ParentChunkPreview(BaseModel):
+    """
+    父块预览模型
+
+    包含父块信息及其所有叶子块。
+    """
     id: str
     heading_path: list[str]
     char_count: int
     page_start: int | None = None
     page_end: int | None = None
+    created_at: str | None = None
     content_preview: str
     leaves: list[LeafChunkPreview]
 
 
 class ChunkPreviewResponse(BaseModel):
+    """分块预览响应模型"""
     filename: str
     parents: list[ParentChunkPreview]

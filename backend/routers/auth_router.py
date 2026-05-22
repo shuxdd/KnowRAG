@@ -1,3 +1,19 @@
+"""
+认证路由模块
+
+提供用户注册、登录、获取当前用户信息等认证相关接口。
+
+接口列表：
+- POST /api/auth/register: 用户注册
+- POST /api/auth/login: 用户登录，获取 JWT 令牌
+- GET /api/auth/me: 获取当前登录用户信息
+
+安全措施：
+- 密码使用 bcrypt 哈希存储
+- 登录时使用虚拟哈希防止用户枚举攻击
+- JWT 令牌有过期时间
+"""
+
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -21,13 +37,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Dummy bcrypt hash used to prevent timing-based username enumeration on login.
-# When a user doesn't exist, we still run bcrypt verify to keep response timing constant.
 DUMMY_HASH = "$2b$12$pF.Qp0KPLYyhnClcRfKLiO97K2CHD1Qj5wWVk5tS9EV72Ua1p6Ftq"
 
 
 @router.post("/register", response_model=AuthUserResponse)
 async def register(req: AuthRegisterRequest):
+    """
+    用户注册接口
+
+    Args:
+        req: 包含用户名和密码的注册请求
+
+    Returns:
+        新创建的用户信息
+
+    Raises:
+        HTTPException 409: 用户名已存在
+    """
     with SessionFactory() as session:
         user = UserORM(
             username=req.username,
@@ -52,6 +78,18 @@ async def register(req: AuthRegisterRequest):
 
 @router.post("/login", response_model=AuthTokenResponse)
 async def login(req: AuthLoginRequest):
+    """
+    用户登录接口
+
+    Args:
+        req: 包含用户名和密码的登录请求
+
+    Returns:
+        JWT 访问令牌
+
+    Raises:
+        HTTPException 401: 用户名或密码错误
+    """
     with SessionFactory() as session:
         user = (
             session.query(UserORM)
@@ -59,7 +97,6 @@ async def login(req: AuthLoginRequest):
             .first()
         )
         if user is None:
-            # Do NOT reveal whether username exists — dummy-verify to prevent timing leak
             verify_password(req.password, DUMMY_HASH)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -76,6 +113,15 @@ async def login(req: AuthLoginRequest):
 
 @router.get("/me", response_model=AuthUserResponse)
 async def me(current_user=Depends(get_current_user)):
+    """
+    获取当前登录用户信息接口
+
+    Args:
+        current_user: 通过 JWT 令牌自动注入的当前用户
+
+    Returns:
+        当前用户的信息
+    """
     return AuthUserResponse(
         id=current_user.id,
         username=current_user.username,

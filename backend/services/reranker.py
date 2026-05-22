@@ -1,3 +1,18 @@
+"""
+重排序服务模块
+
+使用交叉编码器（Cross-Encoder）对候选文档进行精细排序。
+
+特点：
+- 比双编码器（Bi-Encoder）精度更高
+- 同时编码查询和文档，计算相关性分数
+- 使用 BGE Reranker 模型
+
+使用场景：
+- deep 检索策略的最后一步
+- 对混合检索结果进行二次排序
+"""
+
 import os
 from typing import List
 from langchain_core.documents import Document
@@ -10,9 +25,9 @@ settings = get_settings()
 class Reranker:
     """
     重排序服务
-    使用交叉编码器（Cross-Encoder）对候选文档进行精细排序
-    相比双编码器（Bi-Encoder），交叉编码器精度更高但速度较慢
-    使用 BGE Reranker 模型
+
+    使用交叉编码器对候选文档进行精细排序。
+    模型懒加载，首次使用时才从 HuggingFace 加载。
     """
 
     def __init__(self):

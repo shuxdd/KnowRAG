@@ -1,20 +1,50 @@
+"""
+问答服务模块
+
+提供 RAG 问答的核心功能：
+1. 检索策略选择：auto 模式下自动选择最佳检索策略
+2. 查询改写：利用对话历史改写查询（指代消解、扩展、分解）
+3. 文档检索：调用混合检索器获取相关文档
+4. LLM 问答：基于检索结果生成答案
+5. 流式输出：支持 SSE 流式返回答案
+
+检索策略映射：
+- fast/vector: _fast_retrieve（仅向量检索）
+- precise/hybrid: _precise_retrieve（向量 + BM25 混合）
+- hybrid_rerank/deep: _deep_retrieve（向量 + BM25 + HyDE + Rerank）
+"""
+
 import json
-from typing import List, AsyncIterator
-from langchain_openai import ChatOpenAI
+import logging
+from typing import AsyncIterator, List
+
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
 from backend.config import get_settings
+
+logger = logging.getLogger(__name__)
 from backend.models.schemas import Source
-from backend.services.hybrid_retriever import hybrid_retriever, rrf_fusion
+from backend.services.hybrid_retriever import hybrid_retriever, retrieval_cache, rrf_fusion
 from backend.services.query_rewriter import QueryRewriter
 from backend.services.query_router import query_router
 from backend.services.session_service import session_service
 
 settings = get_settings()
 
-# RAG 系统的提示词模板
-# 要求模型基于提供的上下文回答，并注明来源
-PROMPT_TEMPLATE = """You are an enterprise knowledge base assistant. Answer questions strictly based on the provided document context and conversation history. If relevant information is not found, explicitly state "未在知识库中找到相关信息". Cite specific document sources when answering.
+# 意图分类规则：从上到下匹配，命中即返回，未命中 → factoid
+INTENT_RULES: list[tuple[str, list[str]]] = [
+    ("compare", ["对比", "比较", "区别", "不同", "异同", "哪个好", "哪个更",
+                  "优缺点", "优劣", "差异", "vs", " VS "]),
+    ("define",  ["是什么", "什么叫", "什么是", "指的是", "定义", "含义", "概念"]),
+    ("list",    ["列出", "有哪些", "几个", "哪些", "分类", "种类", "包括哪些", "一共"]),
+    ("how_to",  ["怎么", "如何", "怎样", "步骤", "方法", "怎么做", "流程",
+                  "配置", "部署", "安装", "搭建", "实现"]),
+]
+
+INTENT_PROMPTS: dict[str, str] = {
+    "compare": """You are an enterprise knowledge base assistant. Compare and contrast based on the provided context. Use a table for side-by-side comparison when applicable. Highlight similarities, differences, and give a recommendation if asked.
 
 Previous conversation:
 {chat_history}
@@ -24,173 +54,281 @@ Context:
 
 Question: {question}
 
-Answer:"""
+Answer (use table for comparison, then explain):""",
+
+    "define": """You are an enterprise knowledge base assistant. First give a concise one-sentence definition, then expand with key details and examples from the context. If relevant information is not found, explicitly state "未在知识库中找到相关信息".
+
+Previous conversation:
+{chat_history}
+
+Context:
+{context}
+
+Question: {question}
+
+Answer (definition first, then details):""",
+
+    "list": """You are an enterprise knowledge base assistant. List items clearly based on the context. State the total count first, then enumerate each item with a brief description. Group related items if applicable.
+
+Previous conversation:
+{chat_history}
+
+Context:
+{context}
+
+Question: {question}
+
+Answer (total count + numbered list):""",
+
+    "how_to": """You are an enterprise knowledge base assistant. Provide step-by-step instructions based on the context. List prerequisites first, then number each step. Note caveats or common pitfalls for each step.
+
+Previous conversation:
+{chat_history}
+
+Context:
+{context}
+
+Question: {question}
+
+Answer (prerequisites → numbered steps → caveats):""",
+
+    "factoid": """You are an enterprise knowledge base assistant. Answer questions strictly based on the provided document context and conversation history. If relevant information is not found, explicitly state "未在知识库中找到相关信息". Cite specific document sources when answering.
+
+Previous conversation:
+{chat_history}
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:""",
+}
 
 
 class QAService:
     """
     问答服务
-    核心服务，负责：
-    - 文档检索（支持多种策略）
-    - 基于检索结果的问答生成
-    - 流式问答响应（SSE）
-    - 多轮对话支持
+
+    提供 RAG 问答的核心功能，包括检索、问答和流式输出。
     """
 
-    # 检索策略映射表
     STRATEGIES = {
         "fast": hybrid_retriever._fast_retrieve,
         "precise": hybrid_retriever._precise_retrieve,
         "deep": hybrid_retriever._deep_retrieve,
-        # 旧名映射（向后兼容）
         "vector": hybrid_retriever._fast_retrieve,
         "hybrid": hybrid_retriever._precise_retrieve,
         "hybrid_rerank": hybrid_retriever._deep_retrieve,
     }
 
-    CHAT_PROMPT = """You are a helpful enterprise knowledge base assistant. Answer greetings, thanks, or casual conversation naturally and briefly. You can help users with questions about documented enterprise policies, processes, and knowledge.
-
-If the user is greeting or thanking you, respond in a friendly manner.
-If the user asks what you can do, explain that you can answer questions based on the knowledge base documents."""
-
     def __init__(self):
-        """
-        初始化问答服务
-        - 配置 LLM（通义千问）
-        - 初始化提示词模板
-        """
         self.llm = ChatOpenAI(
             model=settings.qwen_model,
             api_key=settings.qwen_api_key,
             base_url=settings.qwen_base_url,
-            temperature=0.3,  # 中等随机性，平衡创造性和准确性
+            temperature=0.3,
         )
-        self.prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        self._prompts = {
+            intent: ChatPromptTemplate.from_template(tpl)
+            for intent, tpl in INTENT_PROMPTS.items()
+        }
         self.rewriter = QueryRewriter()
         self.router = query_router
 
+    @staticmethod
+    def _classify_intent(query: str) -> str:
+        for intent, keywords in INTENT_RULES:
+            if any(k in query for k in keywords):
+                return intent
+        return "factoid"
+
+    def _get_prompt(self, intent: str) -> ChatPromptTemplate:
+        return self._prompts.get(intent, self._prompts["factoid"])
+
     def _build_context(self, docs: List[Document]) -> str:
-        """
-        将检索到的文档列表构建为上下文字符串
-
-        Args:
-            docs: Document 对象列表
-
-        Returns:
-            格式化的上下文字符串，每个文档前标注来源
-        """
         parts = []
         for i, doc in enumerate(docs):
             filename = doc.metadata.get("filename", "unknown")
-            parts.append(f"[Source {i+1}: {filename}]\n{doc.page_content}")
+            parts.append(f"[Source {i + 1}: {filename}]\n{doc.page_content}")
         return "\n\n---\n\n".join(parts)
 
     def _extract_sources(self, docs: List[Document]) -> List[Source]:
-        """
-        从 Document 对象中提取来源信息
-
-        Args:
-            docs: Document 对象列表
-
-        Returns:
-            Source 对象列表，包含文件名、内容摘要和相关性分数
-        """
         return [
             Source(
-                content=doc.page_content[:300],  # 截取前300字符作为摘要
+                content=doc.page_content[:300],
                 filename=doc.metadata.get("filename", "unknown"),
                 score=round(doc.metadata.get("score", 0.0), 4),
             )
             for doc in docs
         ]
 
-    def _format_history(self, messages: list) -> str:
-        """
-        将对话历史格式化为字符串
-
-        Args:
-            messages: LangChain 消息对象列表
-
-        Returns:
-            格式化的对话历史字符串，最多包含最近10条消息
-        """
+    @staticmethod
+    def _format_messages(messages: list) -> str:
+        """Format raw messages list into text."""
         if not messages:
             return "(无历史对话)"
         lines = []
-        for msg in messages[-10:]:  # 只取最近10条消息
-            role = "用户" if msg.type == "human" else "助手"
-            lines.append(f"{role}: {msg.content}")
+        for msg in messages[-4:]:  # last 2 turns
+            role = "用户" if (isinstance(msg, dict) and msg.get("role") == "user") or (hasattr(msg, "type") and msg.type == "human") else "助手"
+            content = msg.get("content") if isinstance(msg, dict) else msg.content
+            lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
-    def search(self, query: str, strategy: str = "auto", top_k: int = 5, chat_history: str = "") -> List[Document]:
-        """
-        根据策略执行文档检索，支持自动路由
+    def _format_history(self, session_id: str, messages: list) -> str:
+        summary = session_service.get_summary(session_id)
+        recent = self._format_messages(messages)
+        if summary:
+            return f"[对话摘要]\n{summary}\n\n[最近对话]\n{recent}"
+        return recent
 
-        Args:
-            query: 查询文本
-            strategy: 检索策略（auto/fast/precise/deep/chat），auto 为自动路由
-            top_k: 返回的文档数量
-            chat_history: 格式化的对话历史，有历史时触发查询改写
+    COMPRESS_PROMPT = (
+        "Summarize the following conversation in 2-3 sentences. "
+        "Keep key facts, decisions, entity names, and topics discussed. "
+        "Write in the same language as the conversation.\n\n"
+        "{input_text}\n\nSummary:"
+    )
 
-        Returns:
-            Document 对象列表
-        """
-        # 自动路由
-        if strategy == "auto":
-            llm_hint = None
-            if chat_history:
-                rewrite_result = self.rewriter.rewrite(query, chat_history)
-                llm_hint = rewrite_result.get("route")
-            strategy = self.router.route(query, llm_hint)
+    def _maybe_compress(self, session_id: str):
+        msgs = session_service.get_messages(session_id)
+        if len(msgs) <= 10:
+            return
+        old_summary = session_service.get_summary(session_id)
+        old_text = self._format_messages(msgs[:-4])
+        if not old_text or old_text == "(无历史对话)":
+            return
 
-        # chat 模式：空检索列表
-        if strategy == "chat":
-            return []
+        input_text = old_text
+        if old_summary:
+            input_text = f"Previous summary: {old_summary}\n\nNew messages: {old_text}"
 
-        # 查询改写（非 chat 模式，有历史时）
+        prompt = self.COMPRESS_PROMPT.format(input_text=input_text)
+        try:
+            response = self.llm.invoke(prompt)
+            new_summary = response.content.strip()
+            if new_summary:
+                session_service.update_summary(session_id, new_summary)
+        except Exception:
+            logger.warning("Conversation compression failed", exc_info=True)
+
+    def resolve_strategy(self, query: str, strategy: str = "auto", chat_history: str = "") -> str:
+        if strategy != "auto":
+            return strategy
+
+        llm_hint = None
         if chat_history:
             rewrite_result = self.rewriter.rewrite(query, chat_history)
-            queries = self.rewriter.get_queries(rewrite_result)
-        else:
-            queries = [query]
+            llm_hint = rewrite_result.get("route")
+        return self.router.route(query, llm_hint)
+
+    def _prepare_search(
+        self,
+        query: str,
+        strategy: str = "auto",
+        chat_history: str = "",
+    ) -> tuple[str, list[str], dict]:
+        rewrite_result = {
+            "original": query,
+            "rewritten": query,
+            "sub_queries": [],
+            "changes": [],
+        }
+        llm_hint = None
+        if chat_history:
+            rewrite_result = self.rewriter.rewrite(query, chat_history)
+            llm_hint = rewrite_result.get("route")
+
+        actual_strategy = self.router.route(query, llm_hint) if strategy == "auto" else strategy
+        if actual_strategy == "chat":
+            return actual_strategy, [], rewrite_result
+
+        queries = self.rewriter.get_queries(rewrite_result) if chat_history else [query]
+        return actual_strategy, queries, rewrite_result
+
+    def _search_with_plan(
+        self,
+        query: str,
+        actual_strategy: str,
+        queries: List[str],
+        top_k: int,
+        chat_history: str = "",
+        use_cache: bool = True,
+    ) -> List[Document]:
+        if actual_strategy == "chat":
+            return []
+
+        cache_key = retrieval_cache.build_cache_key(
+            namespace="qa_search",
+            query=query,
+            strategy=actual_strategy,
+            top_k=top_k,
+            chat_history=chat_history,
+            extra={"queries": queries},
+        )
+        if use_cache:
+            cached = retrieval_cache.get(cache_key, label=query)
+            if cached:
+                return cached
 
         if len(queries) == 1:
-            return self._retrieve(queries[0], strategy, top_k)
+            docs = self._retrieve(queries[0], actual_strategy, top_k)
         else:
-            return self._multi_query_retrieve(queries, strategy, top_k)
+            docs = self._multi_query_retrieve(queries, actual_strategy, top_k)
+
+        if use_cache:
+            retrieval_cache.set(cache_key, docs, label=query)
+        return docs
+
+    def search(
+        self,
+        query: str,
+        strategy: str = "auto",
+        top_k: int = 5,
+        chat_history: str = "",
+        use_cache: bool = True,
+    ) -> List[Document]:
+        actual_strategy, queries, _rewrite_result = self._prepare_search(query, strategy, chat_history)
+        return self._search_with_plan(
+            query=query,
+            actual_strategy=actual_strategy,
+            queries=queries,
+            top_k=top_k,
+            chat_history=chat_history,
+            use_cache=use_cache,
+        )
 
     def _retrieve(self, query: str, strategy: str, top_k: int) -> List[Document]:
-        """Execute a single retrieval against the chosen strategy"""
         retriever_fn = self.STRATEGIES.get(strategy, hybrid_retriever._deep_retrieve)
         return retriever_fn(query, top_k)
 
     def _multi_query_retrieve(self, queries: List[str], strategy: str, top_k: int) -> List[Document]:
-        """多查询检索：每个子查询独立检索，RRF 融合"""
         all_docs = []
-        for q in queries:
-            docs = self._retrieve(q, strategy, top_k)
+        for query in queries:
+            docs = self._retrieve(query, strategy, top_k)
             all_docs.append(docs)
         return rrf_fusion(all_docs, top_n=top_k)
 
+    def answer_from_docs(self, question: str, docs: List[Document], chat_history: str = ""):
+        if not docs:
+            return {"answer": "未在知识库中找到相关信息。", "sources": []}
+
+        intent = self._classify_intent(question)
+        prompt = self._get_prompt(intent)
+        context = self._build_context(docs)
+        messages = prompt.format_messages(
+            chat_history=chat_history or "(无历史对话)",
+            context=context,
+            question=question,
+        )
+        response = self.llm.invoke(messages)
+        return {
+            "answer": response.content,
+            "sources": self._extract_sources(docs),
+        }
+
     def ask(self, question: str, strategy: str = "auto", top_k: int = 5):
-        """
-        非流式问答接口
-        执行检索 + LLM 生成，返回完整答案
-
-        Args:
-            question: 用户问题
-            strategy: 检索策略
-            top_k: 检索文档数量
-
-        Returns:
-            包含 answer（答案）和 sources（来源列表）的字典
-        """
-        # 自动路由
-        if strategy == "auto":
-            strategy = self.router.route(question)
-
-        # chat 模式：跳过检索，直接 LLM 回答
-        if strategy == "chat":
+        actual_strategy = self.resolve_strategy(question, strategy)
+        if actual_strategy == "chat":
             chat_prompt = ChatPromptTemplate.from_template(
                 "User: {question}\nAssistant (friendly, brief):"
             )
@@ -198,49 +336,25 @@ If the user asks what you can do, explain that you can answer questions based on
             response = self.llm.invoke(messages)
             return {"answer": response.content, "sources": []}
 
-        docs = self.search(question, strategy, top_k)
-        if not docs:
-            return {"answer": "未在知识库中找到相关信息。", "sources": []}
-        # 构建上下文
-        context = self._build_context(docs)
-        # 调用 LLM 生成答案
-        messages = self.prompt.format_messages(chat_history="(无历史对话)", context=context, question=question)
-        response = self.llm.invoke(messages)
-        return {
-            "answer": response.content,
-            "sources": self._extract_sources(docs),
-        }
+        docs = self.search(question, actual_strategy, top_k)
+        return self.answer_from_docs(question, docs)
 
     async def ask_stream(
-        self, question: str, session_id: str,
-        strategy: str = "auto", top_k: int = 5,
+        self,
+        question: str,
+        session_id: str,
+        strategy: str = "auto",
+        top_k: int = 5,
     ) -> AsyncIterator[str]:
-        """
-        流式问答接口（SSE）
-        支持多轮对话，自动路由，返回流式响应
-
-        Args:
-            question: 用户问题
-            session_id: 会话 ID，用于关联对话历史
-            strategy: 检索策略（auto 为自动路由）
-            top_k: 检索文档数量
-
-        Yields:
-            SSE 格式的数据字符串，包含：
-            - sources: 检索来源信息
-            - token: LLM 生成的文本片段
-            - done: 结束标识
-        """
-        # (1) 加载对话历史
         history = session_service.get_history(session_id)
-        history_text = self._format_history(history.messages)
+        history_text = self._format_history(session_id, history.messages)
 
-        # (2) 自动路由：决定检索策略
-        actual_strategy = strategy
-        if strategy == "auto":
-            actual_strategy = self.router.route(question)
+        actual_strategy, queries, rewrite_result = self._prepare_search(
+            question,
+            strategy,
+            history_text,
+        )
 
-        # (3) chat 模式：跳过检索，直接流式 LLM 回答
         if actual_strategy == "chat":
             chat_prompt = ChatPromptTemplate.from_template(
                 "You are a helpful enterprise knowledge base assistant. "
@@ -261,39 +375,33 @@ If the user asks what you can do, explain that you can answer questions based on
             if session and session.get("title") == "新对话":
                 title = question[:30] + ("..." if len(question) > 30 else "")
                 session_service.update_title(session_id, title)
+            self._maybe_compress(session_id)
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
             return
 
-        # (4) 查询改写 + 文档检索
-        if history.messages:
-            rewrite_result = self.rewriter.rewrite(question, history_text)
-            queries = self.rewriter.get_queries(rewrite_result)
-            # LLM 路由 hint 覆盖（规则优先级更高，由 router 内部保证）
-            if strategy == "auto":
-                llm_hint = rewrite_result.get("route")
-                actual_strategy = self.router.route(question, llm_hint)
-        else:
-            queries = [question]
-            rewrite_result = {"original": question, "rewritten": question, "sub_queries": [], "changes": []}
-
-        if len(queries) == 1:
-            docs = self._retrieve(queries[0], actual_strategy, top_k)
-        else:
-            docs = self._multi_query_retrieve(queries, actual_strategy, top_k)
+        docs = self._search_with_plan(
+            query=question,
+            actual_strategy=actual_strategy,
+            queries=queries,
+            top_k=top_k,
+            chat_history=history_text,
+            use_cache=True,
+        )
         context = self._build_context(docs) if docs else ""
 
-        # (5) 首包：发送检索到的来源信息 + 改写信息 + 路由信息
         sources = self._extract_sources(docs)
         yield f"data: {json.dumps({'type': 'sources', 'data': [s.model_dump() for s in sources], 'rewrite': rewrite_result, 'route': actual_strategy}, ensure_ascii=False)}\n\n"
 
-        # (6) 如果没有检索到文档，直接返回
         if not docs:
             full_answer = "未在知识库中找到相关信息。"
             yield f"data: {json.dumps({'type': 'token', 'data': full_answer}, ensure_ascii=False)}\n\n"
         else:
-            # (7) 流式调用 LLM 生成答案
-            messages = self.prompt.format_messages(
-                chat_history=history_text, context=context, question=question
+            intent = self._classify_intent(question)
+            prompt = self._get_prompt(intent)
+            messages = prompt.format_messages(
+                chat_history=history_text,
+                context=context,
+                question=question,
             )
             full_answer = ""
             async for chunk in self.llm.astream(messages):
@@ -302,20 +410,21 @@ If the user asks what you can do, explain that you can answer questions based on
                     full_answer += token
                     yield f"data: {json.dumps({'type': 'token', 'data': token}, ensure_ascii=False)}\n\n"
 
-        # (8) 持久化对话消息到数据库
         session_service.add_message(session_id, "user", question)
-        session_service.add_message(session_id, "assistant", full_answer,
-                                    [s.model_dump() for s in sources])
+        session_service.add_message(
+            session_id,
+            "assistant",
+            full_answer,
+            [s.model_dump() for s in sources],
+        )
 
-        # (9) 自动生成会话标题（取问题前30个字符）
         session = session_service.get_session(session_id)
         if session and session.get("title") == "新对话":
             title = question[:30] + ("..." if len(question) > 30 else "")
             session_service.update_title(session_id, title)
 
-        # (10) 发送结束标识
+        self._maybe_compress(session_id)
         yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
 
-# 全局单例实例
 qa_service = QAService()

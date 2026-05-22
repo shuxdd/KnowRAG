@@ -151,7 +151,8 @@ class TestRetrieveStrategies:
         retriever, vec, bm25 = self._build_retriever(vec_docs=[doc], bm25_docs=[doc])
         with patch.object(retriever, "_hyde_search", return_value=[doc]), \
              patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
-             patch("backend.services.reranker.reranker") as mock_reranker:
+             patch("backend.services.reranker.reranker") as mock_reranker, \
+             patch("backend.services.hybrid_retriever.retrieval_cache.get", return_value=None):
             mock_reranker.rerank.return_value = [doc]
             result = retriever._deep_retrieve("test", top_k=3)
             assert vec.call_count >= 1
@@ -164,7 +165,8 @@ class TestRetrieveStrategies:
         retriever, vec, bm25 = self._build_retriever(vec_docs=[doc], bm25_docs=[doc])
         with patch.object(retriever, "_hyde_search", return_value=[doc]) as mock_hyde, \
              patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
-             patch("backend.services.reranker.reranker") as mock_reranker:
+             patch("backend.services.reranker.reranker") as mock_reranker, \
+             patch("backend.services.hybrid_retriever.retrieval_cache.get", return_value=None):
             mock_reranker.rerank.return_value = [doc]
             retriever._deep_retrieve("test", top_k=3)
             mock_hyde.assert_called_once()
@@ -176,7 +178,8 @@ class TestRetrieveStrategies:
         orig_k = vec.search_kwargs.get("k", 4)
         with patch.object(retriever, "_hyde_search", return_value=[doc]), \
              patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
-             patch("backend.services.reranker.reranker") as mock_reranker:
+             patch("backend.services.reranker.reranker") as mock_reranker, \
+             patch("backend.services.hybrid_retriever.retrieval_cache.get", return_value=None):
             mock_reranker.rerank.return_value = [doc]
             retriever._deep_retrieve("test", top_k=3)
         assert vec.search_kwargs.get("k") == orig_k

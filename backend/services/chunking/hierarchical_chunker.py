@@ -1,6 +1,26 @@
+"""
+分层分块器模块
+
+将结构化元素列表分块为（父块，叶子块）对。
+
+分块策略：
+1. 父块边界：h1 或 h2 标题创建新的父块
+2. h3-h6 标题保留在当前父块内
+3. 超出大小限制的父块：先按 h3 分割，再按段落分割，最后按文本分割
+
+叶子块构建：
+- 表格和代码块：preserve=True，保留不合并
+- 普通文本：优先语义分块（句子 embedding 相似度骤降处切分），失败时回退到 RecursiveCharacterTextSplitter
+- 过大的语义块：二次递归切分
+- 过小的叶子块：合并到前一个叶子块
+"""
+
+import os
+import re
 import uuid
 from typing import Tuple
 
+import numpy as np
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.config import get_settings
@@ -11,12 +31,11 @@ settings = get_settings()
 
 
 class HierarchicalChunker:
-    """Split StructuredElement lists into (parent, leaf) pairs.
+    """
+    分层分块器
 
-    Parent boundaries are created at heading level 1 or 2.
-    Level 3+ headings stay within the current parent.
-    Oversized parents are recursively split by h3 boundaries,
-    then by paragraph groups, then by text.
+    将结构化元素转换为父块-叶子块层次结构。
+    父块代表文档的逻辑章节，叶子块用于向量检索。
     """
 
     def __init__(self):
@@ -25,6 +44,19 @@ class HierarchicalChunker:
             chunk_overlap=settings.leaf_chunk_overlap,
             separators=["\n\n", "\n", "。", ".", " ", ""],
         )
+        self._semantic_model = None  # lazy init
+
+    @property
+    def semantic_model(self):
+        if self._semantic_model is None:
+            from sentence_transformers import SentenceTransformer
+
+            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+            self._semantic_model = SentenceTransformer(
+                settings.embedding_model,
+                device=settings.embedding_device,
+            )
+        return self._semantic_model
 
     def chunk(
         self, elements: list[StructuredElement], filename: str
@@ -87,6 +119,12 @@ class HierarchicalChunker:
     ) -> ParentChunk:
         content = "\n\n".join(el.content for el in elements)
         pages = [el.page for el in elements if el.page is not None]
+        created_at = None
+        for el in elements:
+            ca = el.metadata.get("created_at")
+            if ca:
+                created_at = ca
+                break
         return ParentChunk(
             id=str(uuid.uuid4()),
             content=content,
@@ -94,6 +132,7 @@ class HierarchicalChunker:
             filename=filename,
             page_start=min(pages) if pages else None,
             page_end=max(pages) if pages else None,
+            created_at=created_at,
         )
 
     def _build_leaves(
@@ -115,12 +154,15 @@ class HierarchicalChunker:
 
         if text_parts:
             all_text = "\n\n".join(t[1] for t in text_parts)
-            split_docs = self._splitter.create_documents([all_text])
-            for ci, doc in enumerate(split_docs):
+            texts = self._split_text_semantic(all_text)
+            if texts is None:
+                split_docs = self._splitter.create_documents([all_text])
+                texts = [doc.page_content for doc in split_docs]
+            for ci, text in enumerate(texts):
                 leaves.append(
                     LeafChunk(
                         id=str(uuid.uuid4()),
-                        content=doc.page_content,
+                        content=text,
                         heading_path=parent.heading_path,
                         parent_id=parent.id,
                         filename=parent.filename,
@@ -221,6 +263,134 @@ class HierarchicalChunker:
 
         return all_parents, all_leaves
 
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text into sentences, Chinese-aware."""
+        parts = re.split(r"(?<=[。！？.!?\n])\s*", text)
+        return [p.strip() for p in parts if p.strip()]
+
+    def _split_text_semantic(self, text: str) -> list[str] | None:
+        """Split plain text at semantic boundaries. Returns None if insufficient boundaries."""
+        sents = self._split_sentences(text)
+        if len(sents) < 4:
+            return None
+
+        embeds = self.semantic_model.encode(sents, convert_to_numpy=True)
+        norms = np.linalg.norm(embeds, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1, norms)
+        embeds = embeds / norms
+
+        similarities = [float(np.dot(embeds[i], embeds[i + 1])) for i in range(len(embeds) - 1)]
+
+        threshold = float(np.mean(similarities) - 0.5 * np.std(similarities))
+        boundaries = [i for i, s in enumerate(similarities) if s < threshold]
+
+        if not boundaries:
+            return None
+
+        groups: list[str] = []
+        start = 0
+        for b in boundaries:
+            if b >= start:
+                groups.append("".join(sents[start : b + 1]))
+                start = b + 1
+        remaining = "".join(sents[start:])
+        if remaining.strip():
+            groups.append(remaining)
+
+        # Split oversized chunks with recursive splitter
+        result: list[str] = []
+        for chunk in groups:
+            if len(chunk) > settings.leaf_chunk_size * 2:
+                sub_docs = self._splitter.create_documents([chunk])
+                result.extend(doc.page_content for doc in sub_docs)
+            else:
+                result.append(chunk)
+
+        # Merge undersized chunks (< 80 chars) into neighbors
+        merged: list[str] = []
+        for chunk in result:
+            if len(chunk) < 80 and merged:
+                merged[-1] = merged[-1] + "\n\n" + chunk
+            else:
+                merged.append(chunk)
+        if len(merged) >= 2 and len(merged[0]) < 80:
+            merged[1] = merged[0] + "\n\n" + merged[1]
+            merged.pop(0)
+
+        return merged if len(merged) >= 2 else None
+
+    def _split_semantic(
+        self,
+        elements: list[StructuredElement],
+        heading_path: list[str],
+        filename: str,
+    ) -> Tuple[list[ParentChunk], list[LeafChunk]] | None:
+        """Semantic chunking by sentence embedding similarity drops.
+
+        Returns (parents, leaves) on success, None when no good boundaries found.
+        """
+        full_text = "\n\n".join(el.content for el in elements)
+        sents = self._split_sentences(full_text)
+        if len(sents) < 4:
+            return None
+
+        embeds = self.semantic_model.encode(sents, convert_to_numpy=True)
+        norms = np.linalg.norm(embeds, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1, norms)
+        embeds = embeds / norms
+
+        similarities = [float(np.dot(embeds[i], embeds[i + 1])) for i in range(len(embeds) - 1)]
+
+        threshold = float(np.mean(similarities) - 0.5 * np.std(similarities))
+        boundaries = [i for i, s in enumerate(similarities) if s < threshold]
+
+        if not boundaries:
+            return None
+
+        # Group sentences at boundaries
+        groups: list[str] = []
+        start = 0
+        for b in boundaries:
+            if b >= start:
+                groups.append("".join(sents[start : b + 1]))
+                start = b + 1
+        remaining = "".join(sents[start:])
+        if remaining.strip():
+            groups.append(remaining)
+
+        # Merge undersized groups (< 200 chars) into neighbors
+        merged: list[str] = []
+        i = 0
+        while i < len(groups):
+            chunk = groups[i]
+            if len(chunk) >= 200 or not merged:
+                merged.append(chunk)
+                i += 1
+            else:
+                # Merge small chunk with previous
+                merged[-1] = merged[-1] + "\n\n" + chunk
+                i += 1
+
+        if len(merged) < 2:
+            return None
+
+        all_parents = []
+        all_leaves = []
+        for idx, text in enumerate(merged):
+            sub_path = heading_path[:]
+            if idx > 0:
+                sub_path = heading_path[:] + [f"§{idx + 1}"]
+            pseudo = StructuredElement(
+                content=text,
+                element_type="paragraph",
+            )
+            sub_parent = self._build_parent([pseudo], sub_path, filename)
+            sub_leaves = self._build_leaves(sub_parent, [pseudo])
+            all_parents.append(sub_parent)
+            all_leaves.extend(sub_leaves)
+        return all_parents, all_leaves
+
     def _split_by_paragraphs(
         self,
         elements: list[StructuredElement],
@@ -232,13 +402,18 @@ class HierarchicalChunker:
             p = self._build_parent(elements, heading_path, filename)
             return [p], self._build_leaves(p, elements)
 
+        # Try semantic split first, fall back to even splits
+        result = self._split_semantic(elements, heading_path, filename)
+        if result is not None:
+            return result
+
         target = max(1, total_len // settings.parent_max_chars)
         # Group all elements by approximate chunk count
         chunk_size = max(1, len(elements) // target)
         all_parents: list[ParentChunk] = []
         all_leaves: list[LeafChunk] = []
         for i in range(0, len(elements), chunk_size):
-            sub = elements[i:i + chunk_size]
+            sub = elements[i : i + chunk_size]
             sub_path = heading_path[:]
             if i > 0:
                 sub_path = heading_path[:] + ["(continued)"]

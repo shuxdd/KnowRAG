@@ -46,8 +46,7 @@ build/
 # Frontend build
 frontend/dist/
 
-# Tests
-tests/
+
 
 # Alembic migrations
 alembic/

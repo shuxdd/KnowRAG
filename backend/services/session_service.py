@@ -1,3 +1,22 @@
+"""
+会话服务模块
+
+管理对话会话（Session）和消息（Message）的持久化存储。
+使用 SQLite 数据库存储，支持多轮对话。
+
+主要功能：
+- 创建会话：create_session()
+- 获取会话：get_session(), list_sessions()
+- 删除会话：delete_session()
+- 消息管理：add_message(), get_history(), get_messages()
+- 会话标题：update_title()
+- 记忆压缩：get_summary(), update_summary()
+
+数据结构：
+- sessions 表：存储会话元信息（ID、标题、创建时间、更新时间）
+- messages 表：存储对话消息（角色、内容、来源、创建时间）
+"""
+
 import sqlite3
 import uuid
 import json
@@ -11,8 +30,8 @@ DB_PATH = "data/sessions.db"
 class SessionService:
     """
     会话管理服务
-    负责会话（Session）和消息（Message）的持久化存储
-    使用 SQLite 数据库存储，支持多轮对话
+
+    负责会话和消息的持久化存储，使用 SQLite 数据库。
     """
 
     def __init__(self):
@@ -42,10 +61,14 @@ class SessionService:
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,        -- 会话 ID
                     title TEXT DEFAULT '新对话', -- 会话标题
+                    summary TEXT DEFAULT '',     -- 滚动对话摘要
                     created_at TEXT NOT NULL,    -- 创建时间
                     updated_at TEXT NOT NULL     -- 最后更新时间
                 )
             """)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "summary" not in existing:
+                conn.execute("ALTER TABLE sessions ADD COLUMN summary TEXT DEFAULT ''")
             # 消息表：存储会话中的每条消息
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -206,15 +229,22 @@ class SessionService:
         return result
 
     def update_title(self, session_id: str, title: str):
-        """
-        更新指定会话的标题
-
-        Args:
-            session_id: 会话 ID
-            title: 新标题
-        """
         with self._get_conn() as conn:
             conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
+            conn.commit()
+
+    def get_summary(self, session_id: str) -> str:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT summary FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return (row[0] or "") if row else ""
+
+    def update_summary(self, session_id: str, summary: str):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE sessions SET summary = ? WHERE id = ?", (summary, session_id)
+            )
             conn.commit()
 
 

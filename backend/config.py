@@ -1,6 +1,22 @@
+"""
+应用配置模块
+
+本模块定义应用的所有配置项，包括：
+- LLM（通义千问）配置
+- Embedding 模型配置
+- Reranker 模型配置
+- ChromaDB 向量数据库配置
+- PostgreSQL 数据库配置
+- Redis 缓存配置
+- 文档分块配置
+- 文件上传配置
+- JWT 认证配置
+
+配置通过 pydantic-settings 从环境变量和 .env 文件读取。
+"""
+
 import os
 
-# HuggingFace 镜像必须在任何模型加载前设置
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from pydantic_settings import BaseSettings
@@ -11,12 +27,13 @@ class Settings(BaseSettings):
     """
     应用配置类
     使用 pydantic-settings 从环境变量和 .env 文件读取配置
+    所有配置项都有默认值，可以在 .env 文件中覆盖
     """
 
     # ==================== Qwen LLM 配置 ====================
     qwen_api_key: str  # 阿里云 DashScope API 密钥（必填）
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # API 地址
-    qwen_model: str = "qwen-plus"  # 使用的 Qwen 模型
+    qwen_model: str = "qwen-max"  # 使用的 Qwen 模型
     qwen_max_tokens: int = 8192  # LLM 最大输出 token 数
 
     # ==================== Embedding 配置 ====================
@@ -41,6 +58,13 @@ class Settings(BaseSettings):
     pg_connect_timeout: int = 5
     auto_migrate: bool = True
     preload_models: bool = True
+
+    # === Redis ===
+    redis_url: str = "redis://localhost:6380/0"
+    retrieval_cache_ttl: int = 600  # retrieval cache TTL in seconds
+
+    # === Logging ===
+    log_level: str = "INFO"
 
     # === Chunking ===
     parent_max_chars: int = 1500
@@ -71,7 +95,10 @@ def get_settings() -> Settings:
     """
     获取配置单例（带缓存）
 
+    使用 lru_cache 装饰器缓存配置实例，避免重复读取环境变量。
+    整个应用应使用此函数获取配置，而不是直接实例化 Settings。
+
     Returns:
-        Settings 实例
+        Settings 实例（单例）
     """
     return Settings()

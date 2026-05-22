@@ -143,6 +143,7 @@ function ChunkPreviewModal({ data, onClose }: { data: ChunkPreviewResponse; onCl
                 <div style={{ color: '#94a3b8', fontSize: 12 }}>
                   {p.char_count} 字 · {p.leaves.length} 个叶子
                   {p.page_start != null && ` · p${p.page_start}${p.page_end != null && p.page_end !== p.page_start ? `-${p.page_end}` : ''}`}
+                  {p.created_at && ` · ${new Date(p.created_at).toLocaleDateString('zh-CN')}`}
                 </div>
                 <div style={{ color: '#64748b', fontSize: 12, marginTop: 4, lineHeight: 1.4 }}>
                   {p.content_preview}...
@@ -162,6 +163,7 @@ function ChunkPreviewModal({ data, onClose }: { data: ChunkPreviewResponse; onCl
                 </div>
                 <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 16 }}>
                   {selectedParent.char_count} 字 · 页 {selectedParent.page_start ?? '?'}-{selectedParent.page_end ?? '?'}
+                  {selectedParent.created_at && ` · ${new Date(selectedParent.created_at).toLocaleDateString('zh-CN')}`}
                 </div>
                 {selectedParent.leaves.map((leaf) => (
                   <div

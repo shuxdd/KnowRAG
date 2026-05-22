@@ -1,4 +1,21 @@
+"""
+PDF 解析器模块
+
+解析策略：
+1. MinerU（主路径）：优先使用 MinerU Flash 模式解析所有 PDF
+2. PyMuPDF（回退路径）：MinerU 不可用或失败时，使用 PyMuPDF 提取文本块、
+   基于字体大小识别标题级别（h1/h2/h3）、提取表格
+
+PyMuPDF 回退路径支持：
+- 文本提取和布局分析
+- 标题检测（基于字体大小和加粗）
+- 表格提取并转换为 Markdown 格式
+"""
+
 import logging
+import re
+from datetime import datetime, timezone
+
 import fitz
 from collections import Counter
 from backend.config import get_settings
@@ -8,43 +25,86 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+def _parse_pdf_date(raw: str) -> str | None:
+    """
+    解析 PDF 日期字符串
+
+    支持格式：
+    - D:YYYYMMDDHHMMSS+HH'MM'（PDF 内部格式）
+    - ISO 格式
+
+    Args:
+        raw: 原始日期字符串
+
+    Returns:
+        ISO 格式日期字符串，解析失败返回 None
+    """
+    if not raw:
+        return None
+    match = re.search(r"(\d{4}\d{2}\d{2}\d{2}\d{2}\d{2})", raw)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d%H%M%S").replace(
+                tzinfo=timezone.utc
+            ).isoformat()
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(raw.replace("'", "")).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
 class PdfParser(BaseParser):
+    """
+    PDF 文档解析器
+
+    使用 PyMuPDF (fitz) 库解析 PDF，提取文本、标题、表格等结构。
+    支持自动检测扫描件并回退到 MinerU 解析。
+    """
+
     def parse(self, filepath: str) -> list[StructuredElement]:
+        """
+        解析 PDF 文件
+
+        优先使用 MinerU 解析，失败时回退到 PyMuPDF。
+
+        Args:
+            filepath: PDF 文件路径
+
+        Returns:
+            结构化元素列表
+        """
+        try:
+            from backend.services.parsing.mineru_parser import MinerUParser
+            return MinerUParser().parse(filepath)
+        except ImportError:
+            logger.warning("MinerU not installed, falling back to PyMuPDF")
+        except Exception:
+            logger.warning(
+                "MinerU parsing failed for %s, falling back to PyMuPDF",
+                filepath,
+                exc_info=True,
+            )
+        return self._parse_pymupdf(filepath)
+
+    def _parse_pymupdf(self, filepath: str) -> list[StructuredElement]:
+        """PyMuPDF fallback parsing with font-based heading detection and table extraction."""
         doc = fitz.open(filepath)
         page_count = doc.page_count
         if page_count == 0:
             doc.close()
             return []
 
-        total_chars = 0
-        for page in doc:
-            total_chars += len(page.get_text().strip())
+        pdf_meta = doc.metadata or {}
+        created_raw = pdf_meta.get("creationDate") or pdf_meta.get("modDate")
+        created_at = _parse_pdf_date(created_raw) if created_raw else None
         doc.close()
-
-        if total_chars < 100 * page_count:
-            logger.info(
-                "Detected scanned PDF (%d chars across %d pages), falling back to MinerU",
-                total_chars,
-                page_count,
-            )
-            try:
-                from backend.services.parsing.mineru_parser import MinerUParser
-
-                return MinerUParser().parse(filepath)
-            except ImportError:
-                logger.warning(
-                    "MinerU not installed, falling back to PyMuPDF for scanned PDF"
-                )
-            except Exception:
-                logger.warning(
-                    "MinerU parsing failed for %s, falling back to PyMuPDF",
-                    filepath,
-                    exc_info=True,
-                )
 
         doc = fitz.open(filepath)
         sizes: list[float] = []
         pages_text: list[list[tuple[fitz.Rect, str, float, bool]]] = []
+        elem_meta = {"created_at": created_at} if created_at else {}
 
         for page_num in range(doc.page_count):
             page = doc[page_num]
@@ -106,7 +166,8 @@ class PdfParser(BaseParser):
                 table_regions.append(tbl.bbox)
                 result.append(
                     StructuredElement(
-                        content=md_table, element_type="table", page=page_num
+                        content=md_table, element_type="table", page=page_num,
+                        metadata=elem_meta,
                     )
                 )
 
@@ -133,7 +194,8 @@ class PdfParser(BaseParser):
                     if len(text) > 100:
                         result.append(
                             StructuredElement(
-                                content=text, element_type="paragraph", page=page_num
+                                content=text, element_type="paragraph", page=page_num,
+                                metadata=elem_meta,
                             )
                         )
                     else:
@@ -143,12 +205,14 @@ class PdfParser(BaseParser):
                                 element_type="heading",
                                 heading_level=h_level,
                                 page=page_num,
+                                metadata=elem_meta,
                             )
                         )
                 else:
                     result.append(
                         StructuredElement(
-                            content=text, element_type="paragraph", page=page_num
+                            content=text, element_type="paragraph", page=page_num,
+                            metadata=elem_meta,
                         )
                     )
 

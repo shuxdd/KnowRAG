@@ -1,6 +1,23 @@
+"""
+向量检索服务模块
+
+基于 ChromaDB 实现向量存储和相似度检索。
+使用 Sentence Transformer (bge-small-zh-v1.5) 将文本转换为向量。
+
+核心功能：
+- add_documents(): 添加文档到向量库
+- similarity_search(): 向量相似度检索
+- delete_by_filename(): 按文件名删除文档
+- get_document_stats(): 获取文档统计信息
+
+向量集合配置：
+- 名称：knowledge_base（可配置）
+- 距离度量：余弦相似度（cosine）
+- 持久化：自动保存到本地目录
+"""
+
 import os
 
-# 必须在 chromadb 导入前设置，因为 chromadb 会触发 huggingface_hub 读环境变量
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
@@ -19,8 +36,9 @@ settings = get_settings()
 class VectorService:
     """
     向量检索服务
-    基于 ChromaDB 实现向量存储和相似度检索
-    使用 Sentence Transformer  embedding 模型将文本转换为向量
+
+    基于 ChromaDB 实现向量存储和相似度检索。
+    使用 Sentence Transformer embedding 模型将文本转换为向量。
     """
 
     def __init__(self):

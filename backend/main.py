@@ -1,3 +1,20 @@
+"""
+KnowRAG 后端主入口
+
+FastAPI 应用的主模块，负责：
+1. 创建 FastAPI 应用实例
+2. 配置 CORS 中间件
+3. 注册各模块路由
+4. 执行启动任务（数据库迁移、模型预加载）
+5. 提供健康检查接口
+
+路由分组：
+- /api/auth: 认证路由（公开）
+- /api/documents: 文档管理路由（需认证）
+- /api/qa: 问答路由（需认证）
+- /api/eval: 评估路由（需认证）
+"""
+
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
@@ -6,26 +23,33 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import documents, qa, eval, auth_router
 from backend.utils.auth import get_current_user
 
-# 创建 FastAPI 应用实例
 app = FastAPI(
-    title="KnowRAG - Enterprise Knowledge Base",  # API 标题
-    version="1.0.0",                              # API 版本
-    description="RAG-powered enterprise knowledge base with hybrid search and reranking",  # API 描述
+    title="KnowRAG - Enterprise Knowledge Base",
+    version="1.0.0",
+    description="RAG-powered enterprise knowledge base with hybrid search and reranking",
 )
 
 import logging
 from alembic.config import Config as AlembicConfig
 from alembic import command as alembic_command
 from backend.config import get_settings
+from backend.utils.logging import setup_logging
+
+settings = get_settings()
+setup_logging(level=settings.log_level)
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 @app.on_event("startup")
 async def run_startup():
-    """Run startup tasks: Alembic migrations + model preloading."""
-    # 1. Alembic migration
+    """
+    启动时执行的任务
+
+    包括：
+    1. Alembic 数据库迁移
+    2. 模型预加载（Reranker、Embedding 模型）
+    """
     if settings.auto_migrate:
         try:
             alembic_cfg = AlembicConfig("alembic.ini")
@@ -55,20 +79,18 @@ async def run_startup():
         logger.info("Model preloading complete")
 
 
-# 配置 CORS 中间件，允许前端开发服务器访问
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # 允许的前端地址
-    allow_credentials=True,                    # 允许携带凭证
-    allow_methods=["*"],                       # 允许所有 HTTP 方法
-    allow_headers=["*"],                       # 允许所有请求头
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# 注册各模块的路由
-app.include_router(auth_router.router)  # 认证路由（公开，不需要 token）
-app.include_router(documents.router, dependencies=[Depends(get_current_user)])  # 文档管理路由 — 需认证
-app.include_router(qa.router, dependencies=[Depends(get_current_user)])         # 问答路由 — 需认证
-app.include_router(eval.router, dependencies=[Depends(get_current_user)])        # 评估路由 — 需认证
+app.include_router(auth_router.router)
+app.include_router(documents.router, dependencies=[Depends(get_current_user)])
+app.include_router(qa.router, dependencies=[Depends(get_current_user)])
+app.include_router(eval.router, dependencies=[Depends(get_current_user)])
 
 
 @app.get("/api/health")

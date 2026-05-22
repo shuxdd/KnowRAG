@@ -1,9 +1,18 @@
+"""
+文件工具模块
+
+提供文件验证相关的工具函数：
+- validate_file(): 验证上传文件的类型
+- validate_file_size(): 验证上传文件的大小
+
+支持的的文件类型：.pdf, .docx, .txt, .md
+最大文件大小：50MB
+"""
+
 import os
 from fastapi import UploadFile, HTTPException
 
-# 允许上传的文件扩展名
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
-# 最大上传文件大小（50MB）
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 

@@ -1,10 +1,34 @@
+"""
+评估路由模块
+
+提供 RAG 系统评估的接口，支持评估检索策略的效果。
+
+接口列表：
+- GET /api/eval/results: 获取评估历史列表
+- GET /api/eval/results/{run_id}: 获取评估运行的详细信息
+- DELETE /api/eval/results/{run_id}: 删除评估运行记录
+- POST /api/eval/run: 触发新的评估运行
+
+评估指标：
+- faithfulness: 答案忠诚度（答案与上下文的吻合程度）
+- context_recall: 上下文召回率（上下文覆盖真实答案的程度）
+- context_precision: 上下文精确度（上下文相关内容的比例）
+- answer_correctness: 答案正确性（与标准答案的对比）
+- answer_accuracy: 答案准确率（基于 LLM 评判）
+
+评估流程：
+1. 加载测试数据集（QA 对）
+2. 对每个问题执行检索和问答
+3. 使用 RAGAS 框架计算各项指标
+4. 存储评估结果
+"""
+
 from fastapi import APIRouter, HTTPException
 from backend.models.schemas import (
     EvalListResponse, EvalRunDetail, EvalRunInfo, EvalRunRequest,
 )
 from backend.services.eval_service import eval_service
 
-# 创建 /api/eval 前缀的路由组
 router = APIRouter(prefix="/api/eval", tags=["eval"])
 
 
@@ -44,8 +68,10 @@ async def get_eval_run(run_id: str):
         id=detail["id"],
         strategy=detail["strategy"],
         dataset_name=detail["dataset_name"],
+        status=detail["status"],
         started_at=detail["started_at"],
         completed_at=detail.get("completed_at"),
+        error_message=detail.get("error_message"),
         avg_faithfulness=detail.get("avg_faithfulness"),
         avg_context_recall=detail.get("avg_context_recall"),
         avg_context_precision=detail.get("avg_context_precision"),
@@ -56,6 +82,7 @@ async def get_eval_run(run_id: str):
                 "question": r["question"],
                 "ground_truth": r["ground_truth"],
                 "answer": r["answer"],
+                "strategy": r.get("strategy"),
                 "contexts": r["contexts"],
                 "faithfulness": r.get("faithfulness"),
                 "context_recall": r.get("context_recall"),

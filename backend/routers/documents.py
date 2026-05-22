@@ -1,3 +1,26 @@
+"""
+文档管理路由模块
+
+提供文档上传、列表查询、删除、分块预览等文档管理接口。
+
+接口列表：
+- POST /api/documents/upload: 上传单个文档
+- POST /api/documents/upload/batch: 批量上传文档
+- GET /api/documents: 获取文档列表
+- DELETE /api/documents: 删除所有文档
+- DELETE /api/documents/{doc_id}: 删除指定文档
+- GET /api/documents/{doc_id}/chunks: 获取文档分块预览
+
+支持的文件类型：PDF、DOCX、TXT、Markdown
+
+文档处理流程：
+1. 验证文件类型和大小
+2. 保存文件到上传目录
+3. 解析文档结构（标题、段落、表格等）
+4. 分块处理（父块 + 叶子块）
+5. 存入向量数据库（ChromaDB）和关系数据库（PostgreSQL）
+"""
+
 import os
 from datetime import datetime
 from typing import List
@@ -14,7 +37,6 @@ from backend.services.document_service import document_service
 from backend.services.vector_service import vector_service
 from backend.utils.file_utils import validate_file
 
-# 创建 /api/documents 前缀的路由组
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 
@@ -182,6 +204,7 @@ async def get_document_chunks(doc_id: str):
             char_count=len(p.content),
             page_start=p.page_start,
             page_end=p.page_end,
+            created_at=p.created_at.isoformat() if p.created_at else None,
             content_preview=p.content[:200],
             leaves=leaf_docs,
         ))
