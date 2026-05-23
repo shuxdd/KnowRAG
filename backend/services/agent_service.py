@@ -1,27 +1,33 @@
 """
 Agent 服务模块
 
-基于 LangGraph 实现的多步推理 Agent，支持自主决策检索策略和工具调用。
+基于 LangGraph 的多步推理 Agent，采用编排图 + 子问题 ReAct 图两层架构。
 
-可用工具：
-- search_docs: 搜索知识库文档
-- search_with_feedback: 增强检索（自动评估质量并改写重搜）
-- list_docs: 列出知识库中的文档
-- get_chunks: 查看文档的分段结构
-- read_section: 精读文档的特定章节
-- compare_docs: 并排对比两个文档
+可用工具（3 个）：
+- search_docs: 搜索知识库文档，支持 fast/precise/deep/auto 四种策略
+- list_docs: 列出知识库中所有文档及章节数、页码范围等元信息
+- read_section: 精读指定文档的章节，支持章节路径匹配和语义搜索两种模式
 
-Agent 流程：
-1. 问题分析：判断问题复杂度，决定是否需要多步推理
-2. 子问题分解：将复杂问题拆解为多个可检索的子问题
-3. 分步检索：对每个子问题执行检索
-4. 质量反思：评估当前回答质量，决定是否需要补充检索
-5. 答案综合：整合所有子问题的答案生成完整回答
+编排流程（orchestration_graph）：
+1. decompose: LLM 拆解复杂问题为多个子问题（简单问题保持原样）
+2. parallel research: 各子问题并行执行独立 ReAct 循环（LLM 自主调用工具）
+3. synthesize: 综合各子问题答案生成完整回答
+4. reflect: 自反思节点评估回答质量，不通过则改写重搜（最多 2 轮）
 
-特点：
-- 支持多轮对话上下文
-- 流式输出（SSE）
-- 自动工具选择
+ReAct 图（react_graph）：
+- LLM 绑定 3 个工具，自主决定调用时机和参数
+- 最多 10 轮工具调用，防止无限循环
+- 所有工具调用有 30 秒超时保护
+
+SSE 事件流：
+- decompose: 子问题分解结果
+- step: 子问题研究进度
+- tool: 工具调用详情
+- thinking: Agent 思考过程
+- token: LLM 生成的文本片段
+- reflect: 反思评估结果
+- sources: 最终引用来源
+- done: 结束标识
 """
 
 import asyncio
@@ -230,8 +236,8 @@ class MultiStepAgentService:
         # Mode 2: semantic search within document
         if query:
             try:
-                results = vector_service.collection.query(
-                    query_texts=[query],
+                results = vector_service.query_with_filter(
+                    query=query,
                     where={"filename": doc_filename},
                     n_results=min(5, len(parents)),
                 )
