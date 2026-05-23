@@ -19,7 +19,6 @@
 import os
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import json
 import uuid
@@ -173,6 +172,63 @@ class VectorService:
             返回文档块的总数量
         """
         return self.collection.count()
+
+    def get_by_filename(self, filename: str) -> list[dict]:
+        """
+        按文件名获取所有叶子块的元数据和内容。
+
+        Returns:
+            list of dict, each containing keys: id, metadata, document
+        """
+        results = self.collection.get(where={"filename": filename})
+        if not results["ids"]:
+            return []
+        return [
+            {
+                "id": results["ids"][i],
+                "metadata": results["metadatas"][i] if results["metadatas"] else {},
+                "document": results["documents"][i] if results["documents"] else "",
+            }
+            for i in range(len(results["ids"]))
+        ]
+
+    def get_by_parent_id(self, parent_id: str) -> list[dict]:
+        """
+        按 parent_id 获取所有叶子块的元数据和内容。
+
+        Returns:
+            list of dict, same structure as get_by_filename
+        """
+        results = self.collection.get(where={"parent_id": parent_id})
+        if not results["ids"]:
+            return []
+        return [
+            {
+                "id": results["ids"][i],
+                "metadata": results["metadatas"][i] if results["metadatas"] else {},
+                "document": results["documents"][i] if results["documents"] else "",
+            }
+            for i in range(len(results["ids"]))
+        ]
+
+    def query_with_filter(
+        self, query: str, where: dict, n_results: int = 5
+    ) -> dict:
+        """
+        带元数据过滤的语义检索。
+
+        Args:
+            query: 查询文本
+            where: ChromaDB 过滤条件，如 {"filename": "doc.pdf"}
+            n_results: 返回数量
+
+        Returns:
+            dict with keys: ids (list[list[str]]), documents (list[list[str]]),
+            metadatas (list[list[dict]]), distances (list[list[float]])
+        """
+        return self.collection.query(
+            query_texts=[query], where=where, n_results=n_results
+        )
 
     def add_leaves(self, leaves: list[LeafChunk]) -> list[str]:
         """Add leaf chunks (v5 Parent-Child pipeline)."""
