@@ -5,7 +5,7 @@
 ## 常用命令
 
 ```bash
-# 后端（需先启动 PostgreSQL Docker 容器，端口 5433）
+# 后端（需先启动 Docker 容器：PostgreSQL:5433、Redis:6379、etcd:2379、Milvus:19530）
 docker-compose up -d
 .venv/Scripts/uvicorn backend.main:app --reload --port 8000
 
@@ -25,24 +25,24 @@ alembic upgrade head
 
 ## 架构
 
-**父子双存**：细粒度叶子块（200-300 字）存入 ChromaDB 做向量检索，粗粒度父块（~1500 字）存入 PostgreSQL。检索时搜叶子块，然后 `expand_to_parents` 将父块完整内容返回给 LLM，提供更完整的上下文。
+**父子双存**：细粒度叶子块（200-300 字）存入 Milvus 做向量检索，粗粒度父块（~1500 字）存入 PostgreSQL。检索时搜叶子块，然后 `expand_to_parents` 将父块完整内容返回给 LLM，提供更完整的上下文。
 
 **检索流水线**（`hybrid_retriever.py`）：三路并行检索（向量检索 bge-small-zh-v1.5 + BM25 结合 jieba 分词 + HyDE 用 LLM 生成假设答案辅助检索）→ 各取 10 条 → RRF 融合（k=60，取 top 10）→ CrossEncoder 重排序（bge-reranker-base，取 top k）→ 展开到父块。
 
 **分块策略**（`hierarchical_chunker.py`）：H1/H2 标题触发父块边界，H3 及以下留在当前父块内。叶子块优先语义分块（句子 embedding 相似度骤降处切分），失败时回退 RecursiveCharacterTextSplitter（300 字，30 字重叠）。表格和代码块原子保留。仅含标题无正文的父块被跳过。不足 100 字的叶子块合并到相邻块。超限父块无 H3 时尝试语义分块再降级均分。
 
-**解析管道**（`services/parsing/`）：四种格式解析器（Markdown、DOCX、PDF 基于 PyMuPDF、TXT）产出 `StructuredElement` 列表 → `HierarchicalChunker` 产出 (ParentChunk, LeafChunk) 对 → `ParentStore`（PostgreSQL）+ `VectorService.add_leaves`（ChromaDB）。结构化解析失败时回退到 LangChain 加载器。
+**解析管道**（`services/parsing/`）：四种格式解析器（Markdown、DOCX、PDF 基于 PyMuPDF、TXT）产出 `StructuredElement` 列表 → `HierarchicalChunker` 产出 (ParentChunk, LeafChunk) 对 → `ParentStore`（PostgreSQL）+ `VectorService.add_leaves`（Milvus）。结构化解析失败时回退到 LangChain 加载器。
 
 **Agentic RAG**（`agent_service.py`）：基于 LangGraph 的多步推理 Agent。LLM 拆解复杂问题为子问题 → 各子问题并行执行独立 ReAct 循环（LLM 自主调用 6 款工具：语义检索、带反馈增强检索、章节精读、多文档对比、文档列表、分段预览）→ 综合子答案 → 自反思节点评估质量，不通过则改写重搜（最多 2 轮）→ SSE 流推送 `decompose`、`step`、`tool`、`thinking`、`token`、`reflect`、`sources`、`done` 事件。
 
-**流式问答**（`qa_service.py`）：从 SQLite 加载对话历史 → `QueryRewriter` 处理指代消解和子问题拆分 → `HybridRetriever` 检索文档 → SSE 流依次推送 `sources`、`token`、`done` 事件 → 消息持久化到 `data/sessions.db`。
+**流式问答**（`qa_service.py`）：从 PostgreSQL 加载对话历史 → `QueryRewriter` 处理指代消解和子问题拆分 → `HybridRetriever` 检索文档 → SSE 流依次推送 `sources`、`token`、`done` 事件 → 消息持久化到 PostgreSQL `sessions`/`messages` 表。
 
 **评估模块**（`eval_service.py`）：加载 `data/test_qa_pairs.json`（55 对 QA）→ 对每种策略（vector/hybrid/hybrid_rerank）：检索文档、生成答案、自定义 LLM 准确率评分 → 构建 RAGAS `SingleTurnSample` 列表 → 运行 `ragas.evaluate()`（Faithfulness、ContextRecall、ContextPrecision、AnswerCorrectness 四项指标）→ 结果存入 `data/eval_results.db`。
 
 ## 关键模式
 
 - **所有服务为模块级单例**（导入时即初始化）：`qa_service`、`vector_service`、`reranker`、`hybrid_retriever`、`document_service`、`parent_store`、`session_service`、`eval_service`
-- **三个数据库**：PostgreSQL 存父块（端口 5433），ChromaDB 存叶子向量（`data/chroma_db/`），SQLite 存会话和评估结果
+- **三个数据库**：PostgreSQL 存父块、会话、消息和评估结果（端口 5433），Milvus 存叶子向量（端口 19530），ChromaDB 已弃用
 - **CORS**：后端仅允许 `http://localhost:5173`。Vite 将 `/api` 代理到 `localhost:8000`
 - **HuggingFace 镜像**：多处设置 `HF_ENDPOINT=https://hf-mirror.com` 用于国内网络
 - **LLM**：通过 DashScope 调用 Qwen（OpenAI 兼容 API），在 `.env` 中配置 `QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_MODEL`
