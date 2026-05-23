@@ -22,6 +22,7 @@
 """
 
 import os
+import logging
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter, UploadFile, File, HTTPException
@@ -33,9 +34,12 @@ from backend.models.schemas import (
     ParentChunkPreview,
     LeafChunkPreview,
 )
+from backend.config import get_settings
 from backend.services.document_service import document_service
 from backend.services.vector_service import vector_service
-from backend.utils.file_utils import validate_file
+from backend.utils.file_utils import validate_file, validate_file_size
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -57,19 +61,18 @@ async def upload_document(file: UploadFile = File(...)):
     Raises:
         HTTPException: 如果文件类型不支持或验证失败
     """
-    validate_file(file)  # 验证文件类型和大小
+    validate_file(file)
     content = await file.read()
+    validate_file_size(len(content))  # fallback check if content-length header missing
 
-    # 保存文件到本地存储
-    filepath = document_service.save_upload(content, file.filename)
-    # 处理文件（加载、分块、存入向量数据库）
-    doc_id = document_service.process_file(filepath, file.filename)
+    try:
+        filepath = document_service.save_upload(content, file.filename)
+        doc_id = document_service.process_file(filepath, file.filename)
+    except Exception as e:
+        logger.error(f"Document processing failed for '{file.filename}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
 
-    # 获取该文件的分块数量
-    collection_results = vector_service.collection.get(
-        where={"filename": file.filename}
-    )
-    chunks_count = len(collection_results["ids"]) if collection_results["ids"] else 0
+    chunks_count = len(vector_service.get_by_filename(file.filename))
 
     return UploadResponse(
         doc_id=doc_id,
@@ -89,10 +92,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             filepath = document_service.save_upload(content, file.filename)
             doc_id = document_service.process_file(filepath, file.filename)
 
-            collection_results = vector_service.collection.get(
-                where={"filename": file.filename}
-            )
-            chunks_count = len(collection_results["ids"]) if collection_results["ids"] else 0
+            chunks_count = len(vector_service.get_by_filename(file.filename))
             results.append({
                 "doc_id": doc_id,
                 "filename": file.filename,
@@ -121,27 +121,35 @@ async def list_documents():
         - chunks_count: 分块数量
         - uploaded_at: 上传时间
     """
-    stats = vector_service.get_document_stats()
-    documents = []
-    for s in stats:
-        filename = s["filename"]
-        file_size = 0
-        # 查找对应的上传文件以获取文件大小
-        for f in os.listdir("data/uploads"):
-            if f.endswith("_" + filename):
-                filepath = os.path.join("data/uploads", f)
-                file_size = os.path.getsize(filepath)
-                break
-        documents.append(
-            DocumentInfo(
-                doc_id=s.get("filename", ""),
-                filename=filename,
-                file_size=file_size,
-                chunks_count=s["chunks_count"],
-                uploaded_at=datetime.now().isoformat(),
+    try:
+        stats = vector_service.get_document_stats()
+        upload_dir = get_settings().upload_dir
+
+        # Build filename -> filesize lookup in one pass
+        file_sizes: dict[str, int] = {}
+        if os.path.isdir(upload_dir):
+            for f in os.listdir(upload_dir):
+                prefix, sep, name = f.partition("_")
+                if sep and name:
+                    file_sizes[name] = os.path.getsize(os.path.join(upload_dir, f))
+
+        documents = []
+        for s in stats:
+            filename = s["filename"]
+            file_size = file_sizes.get(filename, 0)
+            documents.append(
+                DocumentInfo(
+                    doc_id=s.get("filename", ""),
+                    filename=filename,
+                    file_size=file_size,
+                    chunks_count=s["chunks_count"],
+                    uploaded_at=datetime.now().isoformat(),
+                )
             )
-        )
-    return DocumentListResponse(documents=documents)
+        return DocumentListResponse(documents=documents)
+    except Exception as e:
+        logger.error(f"List documents error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取文档列表失败: {str(e)}")
 
 
 @router.delete("")
@@ -173,9 +181,6 @@ async def delete_document(doc_id: str):
 @router.get("/{doc_id:path}/chunks", response_model=ChunkPreviewResponse)
 async def get_document_chunks(doc_id: str):
     from backend.services.parent_store import parent_store
-    from backend.services.vector_service import vector_service
-    from backend.config import get_settings
-    settings = get_settings()
 
     parents = parent_store.get_by_filename(doc_id)
     if not parents:
@@ -183,20 +188,19 @@ async def get_document_chunks(doc_id: str):
 
     parent_previews: list[ParentChunkPreview] = []
     for p in parents:
-        leaf_results = vector_service.collection.get(where={"parent_id": p.id})
+        leaf_results = vector_service.get_by_parent_id(p.id)
         leaf_docs = []
-        if leaf_results["ids"]:
-            for i, lid in enumerate(leaf_results["ids"]):
-                meta = leaf_results["metadatas"][i] if leaf_results["metadatas"] else {}
-                content = leaf_results["documents"][i] if leaf_results["documents"] else ""
-                char_count = len(content)
-                leaf_docs.append(LeafChunkPreview(
-                    chunk_index=meta.get("chunk_index", i),
-                    char_count=char_count,
-                    preserve=bool(meta.get("preserve", False)),
-                    undersized=char_count < 100,
-                    content_preview=content[:150],
-                ))
+        for i, leaf in enumerate(leaf_results):
+            meta = leaf["metadata"]
+            content = leaf["document"]
+            char_count = len(content)
+            leaf_docs.append(LeafChunkPreview(
+                chunk_index=meta.get("chunk_index", i),
+                char_count=char_count,
+                preserve=bool(meta.get("preserve", False)),
+                undersized=char_count < 100,
+                content_preview=content[:150],
+            ))
         leaf_docs.sort(key=lambda l: l.chunk_index)
         parent_previews.append(ParentChunkPreview(
             id=p.id,
