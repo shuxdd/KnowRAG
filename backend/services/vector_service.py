@@ -41,6 +41,8 @@ from backend.services.embedding_service import embedding_service
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+_connected = False
+
 COLLECTION_NAME = settings.milvus_collection
 EMBEDDING_DIM = 512
 MAX_STRING_LEN = 512
@@ -60,23 +62,33 @@ FIELDS = [
 
 def _ensure_collection() -> Collection:
     """连接 Milvus 并确保集合存在，返回已加载的 Collection 对象。"""
-    connections.connect(
-        alias="default",
-        host=settings.milvus_host,
-        port=settings.milvus_port,
-    )
+    global _connected
+    try:
+        if not _connected:
+            connections.connect(
+                alias="default",
+                host=settings.milvus_host,
+                port=settings.milvus_port,
+            )
+            _connected = True
 
-    if utility.has_collection(COLLECTION_NAME):
-        col = Collection(COLLECTION_NAME)
-    else:
-        schema = CollectionSchema(
-            fields=FIELDS,
-            description="KnowRAG knowledge base leaf chunks",
+        if utility.has_collection(COLLECTION_NAME):
+            col = Collection(COLLECTION_NAME)
+        else:
+            schema = CollectionSchema(
+                fields=FIELDS,
+                description="KnowRAG knowledge base leaf chunks",
+            )
+            col = Collection(COLLECTION_NAME, schema=schema)
+
+        col.load()
+        return col
+    except Exception:
+        logger.error(
+            "Failed to connect to Milvus at %s:%s",
+            settings.milvus_host, settings.milvus_port, exc_info=True,
         )
-        col = Collection(COLLECTION_NAME, schema=schema)
-
-    col.load()
-    return col
+        raise
 
 
 class VectorService:
@@ -156,97 +168,112 @@ class VectorService:
     # ==================== 数据检索 ====================
 
     def similarity_search(self, query: str, k: int = 10) -> List[Document]:
-        col = self.collection
-        query_vec = embedding_service.embed_query(query)
+        try:
+            col = self.collection
+            query_vec = embedding_service.embed_query(query)
 
-        search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-        results = col.search(
-            data=[query_vec],
-            anns_field="embedding",
-            param=search_params,
-            limit=k,
-            output_fields=[
-                "id", "content", "filename", "parent_id",
-                "heading_path_json", "page", "chunk_index", "preserve",
-            ],
-        )
+            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
+            results = col.search(
+                data=[query_vec],
+                anns_field="embedding",
+                param=search_params,
+                limit=k,
+                output_fields=[
+                    "id", "content", "filename", "parent_id",
+                    "heading_path_json", "page", "chunk_index", "preserve",
+                ],
+            )
 
-        docs = []
-        if results and results[0]:
-            for hit in results[0]:
-                entity = hit.entity
-                score = max(0.0, min(1.0, hit.score))
-                metadata = {
-                    "parent_id": entity.get("parent_id", ""),
-                    "filename": entity.get("filename", ""),
-                    "heading_path": json.loads(
-                        entity.get("heading_path_json", "[]")
-                    ),
-                    "page": entity.get("page", 0),
-                    "chunk_index": entity.get("chunk_index", 0),
-                    "preserve": entity.get("preserve", False),
-                    "doc_id": entity.get("id", ""),
-                    "score": score,
-                }
-                docs.append(Document(
-                    page_content=entity.get("content", ""),
-                    metadata=metadata,
-                ))
-        return docs
+            docs = []
+            if results and results[0]:
+                for hit in results[0]:
+                    entity = hit.entity
+                    score = max(0.0, min(1.0, hit.score))
+                    metadata = {
+                        "parent_id": entity.get("parent_id", ""),
+                        "filename": entity.get("filename", ""),
+                        "heading_path": json.loads(
+                            entity.get("heading_path_json", "[]")
+                        ),
+                        "page": entity.get("page", 0),
+                        "chunk_index": entity.get("chunk_index", 0),
+                        "preserve": entity.get("preserve", False),
+                        "doc_id": entity.get("id", ""),
+                        "score": score,
+                    }
+                    docs.append(Document(
+                        page_content=entity.get("content", ""),
+                        metadata=metadata,
+                    ))
+            return docs
+        except Exception:
+            logger.warning("similarity_search failed", exc_info=True)
+            return []
 
     def query_with_filter(
         self, query: str, where: dict, n_results: int = 5
     ) -> dict:
-        col = self.collection
-        query_vec = embedding_service.embed_query(query)
-        filter_expr = self._build_filter_expr(where)
+        try:
+            col = self.collection
+            query_vec = embedding_service.embed_query(query)
+            filter_expr = self._build_filter_expr(where)
 
-        search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-        results = col.search(
-            data=[query_vec],
-            anns_field="embedding",
-            param=search_params,
-            limit=n_results,
-            expr=filter_expr,
-            output_fields=[
-                "id", "content", "filename", "parent_id",
-                "heading_path_json", "page", "chunk_index", "preserve",
-            ],
-        )
+            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
+            results = col.search(
+                data=[query_vec],
+                anns_field="embedding",
+                param=search_params,
+                limit=n_results,
+                expr=filter_expr,
+                output_fields=[
+                    "id", "content", "filename", "parent_id",
+                    "heading_path_json", "page", "chunk_index", "preserve",
+                ],
+            )
 
-        ids_list = []
-        docs_list = []
-        metas_list = []
-        distances_list = []
+            ids_list = []
+            docs_list = []
+            metas_list = []
+            distances_list = []
 
-        if results and results[0]:
-            for hit in results[0]:
-                entity = hit.entity
-                ids_list.append(entity.get("id", ""))
-                docs_list.append(entity.get("content", ""))
-                metas_list.append({
-                    "parent_id": entity.get("parent_id", ""),
-                    "filename": entity.get("filename", ""),
-                    "heading_path_json": entity.get("heading_path_json", "[]"),
-                    "page": entity.get("page", 0),
-                    "chunk_index": entity.get("chunk_index", 0),
-                    "preserve": entity.get("preserve", False),
-                })
-                distances_list.append(1.0 - hit.score)
+            if results and results[0]:
+                for hit in results[0]:
+                    entity = hit.entity
+                    ids_list.append(entity.get("id", ""))
+                    docs_list.append(entity.get("content", ""))
+                    metas_list.append({
+                        "parent_id": entity.get("parent_id", ""),
+                        "filename": entity.get("filename", ""),
+                        "heading_path": json.loads(
+                            entity.get("heading_path_json", "[]")
+                        ),
+                        "page": entity.get("page", 0),
+                        "chunk_index": entity.get("chunk_index", 0),
+                        "preserve": entity.get("preserve", False),
+                    })
+                    distances_list.append(
+                        max(0.0, min(1.0, 1.0 - hit.score))
+                    )
 
-        return {
-            "ids": [ids_list],
-            "documents": [docs_list],
-            "metadatas": [metas_list],
-            "distances": [distances_list],
-        }
+            return {
+                "ids": [ids_list],
+                "documents": [docs_list],
+                "metadatas": [metas_list],
+                "distances": [distances_list],
+            }
+        except Exception:
+            logger.warning("query_with_filter failed", exc_info=True)
+            return {
+                "ids": [[]], "documents": [[]],
+                "metadatas": [[]], "distances": [[]],
+            }
 
     # ==================== 数据查询 ====================
 
     def get_by_filename(self, filename: str) -> list[dict]:
         col = self.collection
         results = col.query(
-            expr=f'filename == "{filename}"',
+            expr=f'filename == "{self._escape_str(filename)}"',
             output_fields=[
                 "id", "content", "filename", "parent_id",
                 "heading_path_json", "page", "chunk_index", "preserve",
@@ -258,7 +285,9 @@ class VectorService:
                 "metadata": {
                     "parent_id": r.get("parent_id", ""),
                     "filename": r.get("filename", ""),
-                    "heading_path_json": r.get("heading_path_json", "[]"),
+                    "heading_path": json.loads(
+                        r.get("heading_path_json", "[]")
+                    ),
                     "page": r.get("page", 0),
                     "chunk_index": r.get("chunk_index", 0),
                     "preserve": r.get("preserve", False),
@@ -271,7 +300,7 @@ class VectorService:
     def get_by_parent_id(self, parent_id: str) -> list[dict]:
         col = self.collection
         results = col.query(
-            expr=f'parent_id == "{parent_id}"',
+            expr=f'parent_id == "{self._escape_str(parent_id)}"',
             output_fields=[
                 "id", "content", "filename", "parent_id",
                 "heading_path_json", "page", "chunk_index", "preserve",
@@ -283,7 +312,9 @@ class VectorService:
                 "metadata": {
                     "parent_id": r.get("parent_id", ""),
                     "filename": r.get("filename", ""),
-                    "heading_path_json": r.get("heading_path_json", "[]"),
+                    "heading_path": json.loads(
+                        r.get("heading_path_json", "[]")
+                    ),
                     "page": r.get("page", 0),
                     "chunk_index": r.get("chunk_index", 0),
                     "preserve": r.get("preserve", False),
@@ -356,18 +387,22 @@ class VectorService:
             return 0
 
         col = self.collection
-        expr = f'filename == "{filename}"'
+        expr = f'filename == "{self._escape_str(filename)}"'
         col.delete(expr)
         col.flush()
         return count
 
     # ==================== 内部方法 ====================
 
+    @staticmethod
+    def _escape_str(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
     def _build_filter_expr(self, where: dict) -> str:
         parts = []
         for key, value in where.items():
             if isinstance(value, str):
-                parts.append(f'{key} == "{value}"')
+                parts.append(f'{key} == "{self._escape_str(value)}"')
             elif isinstance(value, bool):
                 parts.append(f"{key} == {str(value).lower()}")
             elif isinstance(value, (int, float)):
@@ -396,7 +431,9 @@ class VectorService:
                     index_name=f"idx_{field_name}",
                 )
             except Exception:
-                pass
+                logger.warning(
+                    f"Failed to create index on {field_name}", exc_info=True,
+                )
 
 
 # 全局单例
