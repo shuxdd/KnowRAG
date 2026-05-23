@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     chroma_persist_dir: str = "data/chroma_db"  # 向量数据库持久化目录
     chroma_collection: str = "knowledge_base"    # 向量集合名称
 
+    # ==================== Milvus 配置 ====================
+    milvus_host: str = "localhost"
+    milvus_port: int = 19530
+    milvus_collection: str = "knowledge_base"
+
     # ==================== 文档分块配置 ====================
     chunk_size: int = 500      # 分块大小（字符数）
     chunk_overlap: int = 50   # 分块重叠大小
