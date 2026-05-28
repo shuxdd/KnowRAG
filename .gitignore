@@ -55,6 +55,9 @@ node_modules/
 # Docs plans (generated)
 docs/superpowers/
 
+# Playwright MCP artifacts
+.playwright-mcp/
+
 # Distribution
 dist/
 build/
@@ -68,3 +71,6 @@ frontend/dist/
 # Alembic migrations
 alembic/
 alembic.ini
+
+# Docker volumes (large binary data)
+volumes/
