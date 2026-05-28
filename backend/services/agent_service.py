@@ -31,7 +31,6 @@ SSE 事件流：
 """
 
 import asyncio
-import contextvars
 import json
 import logging
 import os
@@ -139,42 +138,33 @@ class MultiStepState(TypedDict):
 class MultiStepAgentService:
     def __init__(self):
         self.llm = ChatOpenAI(
-            model=settings.qwen_model,
-            api_key=settings.qwen_api_key,
-            base_url=settings.qwen_base_url,
+            model=settings.mimo_model,
+            api_key=settings.mimo_api_key,
+            base_url=settings.mimo_base_url,
             temperature=0.3,
         )
-        self._last_search_docs_var: contextvars.ContextVar = contextvars.ContextVar(
-            "last_search_docs", default=[]
-        )
-        self._last_search_sources_var: contextvars.ContextVar = contextvars.ContextVar(
-            "last_search_sources", default=[]
-        )
-        self.react_graph = self._build_react_graph()
-        self.orchestration_graph = self._build_orchestration_graph()
 
-    # ---- 工具实现（Phase 1 原封不动）----------------------------------------
+    # ---- 工具实现（接受 user_id / sources_container 参数，不使用 contextvars）----
 
-    def _search_docs_impl(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
-        """搜索知识库中的文档内容。当用户询问事实性问题时使用此工具。"""
-        docs = qa_service.search(query, strategy, top_k)
-        self._last_search_docs_var.set(docs)
+    def _search_docs_impl(
+        self, query: str, strategy: str, top_k: int,
+        user_id: int, sources_container: list[Source],
+    ) -> str:
+        """搜索知识库中的文档内容。"""
+        docs = qa_service.search(query, strategy, top_k, user_id=user_id)
         if not docs:
             return "知识库中未找到相关文档。"
-
-        self._last_search_sources_var.set([
-            Source(
+        for doc in docs:
+            sources_container.append(Source(
                 content=doc.page_content[:300],
                 filename=doc.metadata.get("filename", "unknown"),
                 score=round(doc.metadata.get("score", 0.0), 4),
-            )
-            for doc in docs
-        ])
+            ))
         return qa_service._build_context(docs)
 
-    def _list_docs_impl(self) -> str:
-        """列出知识库中的所有文档及元信息。当用户询问文档列表时使用。"""
-        stats = vector_service.get_document_stats()
+    def _list_docs_impl(self, user_id: int) -> str:
+        """列出知识库中的所有文档及元信息。"""
+        stats = vector_service.get_document_stats(user_id=user_id)
         if not stats:
             return "知识库中没有文档。"
 
@@ -182,7 +172,7 @@ class MultiStepAgentService:
         for s in stats:
             filename = s["filename"]
             ext = os.path.splitext(filename)[1] if "." in filename else ""
-            parents = parent_store.get_by_filename(filename)
+            parents = parent_store.get_by_filename(filename, user_id=user_id)
             chapter_count = len(parents)
             page_range = ""
             if parents:
@@ -197,17 +187,13 @@ class MultiStepAgentService:
 
     def _read_section_impl(
         self, doc_filename: str,
-        heading_path: list[str] | None = None,
-        query: str = "",
+        heading_path: list[str] | None,
+        query: str,
+        user_id: int,
     ) -> str:
-        """精读指定文档的某个章节。
-
-        两种模式：
-        - heading_path: 按章节路径精确匹配（如 ["休假政策", "年假"]）
-        - query: 在文档内语义搜索（如 "年假天数"），返回最相关的章节
-        """
+        """精读指定文档的某个章节。"""
         try:
-            parents = parent_store.get_by_filename(doc_filename)
+            parents = parent_store.get_by_filename(doc_filename, user_id=user_id)
         except Exception as e:
             logger.warning(f"parent_store lookup failed for '{doc_filename}': {e}")
             return f"查询文档 {doc_filename} 时出错: {e}"
@@ -240,16 +226,16 @@ class MultiStepAgentService:
                     query=query,
                     where={"filename": doc_filename},
                     n_results=min(5, len(parents)),
+                    user_id=user_id,
                 )
                 if results["ids"] and results["ids"][0]:
-                    matched_parents: dict[str, int] = {}  # parent_id -> count
+                    matched_parents: dict[str, int] = {}
                     for i, _doc_id in enumerate(results["ids"][0]):
                         meta = results["metadatas"][0][i] if results["metadatas"] else {}
                         pid = meta.get("parent_id", "")
                         if pid:
                             matched_parents[pid] = matched_parents.get(pid, 0) + 1
 
-                    # Sort parents by match count, take top 3
                     sorted_pids = sorted(matched_parents, key=matched_parents.get, reverse=True)
                     lines = [f"`{doc_filename}` 中与 '{query}' 最相关的章节:"]
                     for pid in sorted_pids[:3]:
@@ -270,10 +256,9 @@ class MultiStepAgentService:
             lines.append(f"  - {heading} (页码 {p.page_start}-{p.page_end}, {len(p.content)} 字)")
         return "\n".join(lines)
 
-    # ---- Async timeout wrappers -----------------------------------------------
+    # ---- Async timeout wrapper -----------------------------------------------
 
-    TOOL_TIMEOUT = 30       # default timeout in seconds
-    TOOL_TIMEOUT_EXTENDED = 60  # for multi-round / LLM-calling tools
+    TOOL_TIMEOUT = 30
 
     async def _run_with_timeout(self, func, timeout: int, error_msg: str, *args, **kwargs):
         """Run a sync function in thread executor with timeout."""
@@ -284,42 +269,13 @@ class MultiStepAgentService:
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"Tool timeout ({timeout}s): {func.__name__}")
+            logger.warning(f"Tool timeout ({timeout}s): {func.__name__ if hasattr(func, '__name__') else 'unknown'}")
             return error_msg
 
-    async def _search_docs_async(self, query: str, strategy: str = "auto", top_k: int = 5) -> str:
-        """搜索知识库中的文档内容。当用户询问事实性问题时使用此工具。"""
-        return await self._run_with_timeout(
-            self._search_docs_impl, self.TOOL_TIMEOUT,
-            "错误：搜索超时，请尝试缩小查询范围。", query, strategy, top_k,
-        )
+    # ---- ReAct 图工厂（接收 tools 列表，避免 contextvars）---------------------
 
-    async def _list_docs_async(self) -> str:
-        """列出知识库中的所有文档及元信息。当用户询问文档列表时使用。"""
-        return await self._run_with_timeout(
-            self._list_docs_impl, self.TOOL_TIMEOUT,
-            "错误：获取文档列表超时。",
-        )
-
-    async def _read_section_async(
-        self, doc_filename: str,
-        heading_path: list[str] | None = None,
-        query: str = "",
-    ) -> str:
-        """精读指定文档的某个章节。支持章节路径匹配或语义搜索两种模式。"""
-        return await self._run_with_timeout(
-            self._read_section_impl, self.TOOL_TIMEOUT,
-            "错误：读取章节超时。", doc_filename, heading_path, query,
-        )
-
-    # ---- Phase 1 ReAct 图 ------------------------------------------------
-
-    def _build_react_graph(self):
-        search_tool = tool(self._search_docs_async)
-        list_tool = tool(self._list_docs_async)
-        read_section_tool = tool(self._read_section_async)
-        tools = [search_tool, list_tool, read_section_tool]
-
+    def _create_react_graph(self, tools):
+        """Create a ReAct graph with the given tools."""
         llm_with_tools = self.llm.bind_tools(tools)
 
         def _agent_node(state: MultiStepState) -> dict:
@@ -349,125 +305,11 @@ class MultiStepAgentService:
 
         return builder.compile()
 
-    # ---- Phase 2 编排图 -----------------------------------------------------
-
-    def _build_orchestration_graph(self):
-        builder = StateGraph(MultiStepState)
-
-        builder.add_node("decompose", self._decompose)
-        builder.add_node("research", self._research)
-        builder.add_node("synthesize", self._synthesize)
-        builder.add_node("reflect", self._reflect)
-
-        builder.set_entry_point("decompose")
-        builder.add_edge("decompose", "research")
-        builder.add_edge("research", "synthesize")
-        builder.add_conditional_edges(
-            "reflect",
-            self._should_continue_or_loop,
-            {"research": "research", END: END},
-        )
-        builder.add_edge("synthesize", "reflect")
-
-        return builder.compile()
-
-    # ---- 节点实现 -----------------------------------------------------------
-
-    def _decompose(self, state: MultiStepState) -> dict:
-        """LLM 分析问题复杂度，输出子问题列表。解析失败时降级为单子问题。"""
-        try:
-            response = self.llm.invoke([
-                SystemMessage(content=DECOMPOSE_PROMPT),
-                HumanMessage(content=f"用户问题：{state['question']}"),
-            ])
-            raw = response.content.strip()
-            json_match = re.search(r'\{[\s\S]*\}', raw)
-            if not json_match:
-                raise ValueError("No JSON found in response")
-            parsed = json.loads(json_match.group(0))
-            sub_questions = parsed.get("sub_questions", [state["question"]])
-            if not sub_questions or not isinstance(sub_questions, list):
-                sub_questions = [state["question"]]
-        except Exception as e:
-            logger.warning(f"Decompose failed, falling back to single question: {e}")
-            sub_questions = [state["question"]]
-
-        return {
-            "sub_questions": sub_questions,
-            "current_step": 0,
-            "research_results": [],
-            "reflection_count": 0,
-            "needs_refinement": False,
-        }
-
-    def _research(self, state: MultiStepState) -> dict:
-        """遍历子问题执行 ReAct。实际流式过程在 ask_stream() 中驱动，
-        此节点仅做状态校验通过。"""
-        return {}
-
-    def _synthesize(self, state: MultiStepState) -> dict:
-        """LLM 综合所有子答案，生成最终回答。"""
-        results_text = self._format_research_summary(state["research_results"])
-        prompt = SYNTHESIZE_PROMPT.format(
-            question=state["question"],
-            results=results_text,
-        )
-        response = self.llm.invoke([
-            SystemMessage(content=prompt),
-            HumanMessage(content="请综合以上子问题分析结果，生成完整回答。"),
-        ])
-        return {"final_answer": response.content}
-
-    def _reflect(self, state: MultiStepState) -> dict:
-        """LLM 自检回答质量，决定是否回环补搜。"""
-        prompt = REFLECT_PROMPT.format(
-            question=state["question"],
-            sub_questions=json.dumps(state["sub_questions"], ensure_ascii=False),
-            answer=state["final_answer"],
-        )
-        try:
-            response = self.llm.invoke([
-                SystemMessage(content=prompt),
-                HumanMessage(content="请评估回答质量。"),
-            ])
-            raw = response.content.strip()
-            json_match = re.search(r'\{[\s\S]*\}', raw)
-            if not json_match:
-                raise ValueError("No JSON found in reflect response")
-            parsed = json.loads(json_match.group(0))
-            passed = parsed.get("pass", True)
-            refinement_query = parsed.get("refinement_query", "")
-            reason = parsed.get("reason", "")
-        except Exception as e:
-            logger.warning(f"Reflect parse failed, defaulting to pass: {e}")
-            passed = True
-            refinement_query = ""
-            reason = ""
-
-        if passed or state.get("reflection_count", 0) >= 2:
-            return {
-                "needs_refinement": False,
-                "reflection_count": state.get("reflection_count", 0),
-            }
-
-        new_sub_questions = [refinement_query] if refinement_query else state.get("sub_questions", [])
-        return {
-            "needs_refinement": True,
-            "reflection_count": state.get("reflection_count", 0) + 1,
-            "sub_questions": new_sub_questions,
-            "current_step": 0,
-        }
-
-    def _should_continue_or_loop(self, state: MultiStepState) -> str:
-        if state.get("needs_refinement") and state.get("reflection_count", 0) < 2:
-            return "research"
-        return END
-
     # ---- 辅助方法 -----------------------------------------------------------
 
     def _format_history(self, session_id: str, messages: list[BaseMessage] | None) -> str:
         if not messages:
-            return "(无历史对话)"
+            return ""
 
         from backend.services.session_service import session_service
 
@@ -527,16 +369,51 @@ class MultiStepAgentService:
         return "\n\n".join(lines)
 
     async def _research_one_sub_q(
-        self, sub_q: str, index: int, session_id: str, history_text: str
+        self, sub_q: str, index: int, session_id: str, history_text: str, user_id: int,
     ):
         """并行执行单个子问题的 ReAct 研究。
 
         Yields 元组 ("tool"|"thinking", index, text) 供外层合并为 SSE。
         最后 yield ("__result__", index, dict) 携带结果。
         """
+        sources_container: list[Source] = []
+
+        # -- 工具闭包（捕获 user_id 和 sources_container，避免 contextvars）--
+
+        async def _search_docs(query: str, strategy: str = "auto", top_k: int = 5) -> str:
+            """搜索知识库中的文档内容。当用户询问事实性问题时使用此工具。"""
+            def _impl():
+                return self._search_docs_impl(query, strategy, top_k, user_id, sources_container)
+            return await self._run_with_timeout(
+                _impl, self.TOOL_TIMEOUT, "错误：搜索超时，请尝试缩小查询范围。"
+            )
+
+        async def _list_docs() -> str:
+            """列出知识库中的所有文档及元信息。当用户询问文档列表时使用。"""
+            def _impl():
+                return self._list_docs_impl(user_id)
+            return await self._run_with_timeout(
+                _impl, self.TOOL_TIMEOUT, "错误：获取文档列表超时。"
+            )
+
+        async def _read_section(
+            doc_filename: str,
+            heading_path: list[str] | None = None,
+            query: str = "",
+        ) -> str:
+            """精读指定文档的某个章节。支持章节路径匹配或语义搜索两种模式。"""
+            def _impl():
+                return self._read_section_impl(doc_filename, heading_path, query, user_id)
+            return await self._run_with_timeout(
+                _impl, self.TOOL_TIMEOUT, "错误：读取章节超时。"
+            )
+
+        search_tool = tool(_search_docs, name="search_docs")
+        list_tool = tool(_list_docs, name="list_docs")
+        read_tool = tool(_read_section, name="read_section")
+        graph = self._create_react_graph([search_tool, list_tool, read_tool])
+
         try:
-            self._last_search_docs_var.set([])
-            self._last_search_sources_var.set([])
             react_state: MultiStepState = {
                 "session_id": session_id,
                 "question": sub_q,
@@ -554,7 +431,7 @@ class MultiStepAgentService:
             }
 
             sub_answer = ""
-            async for event in self.react_graph.astream_events(react_state, version="v2"):
+            async for event in graph.astream_events(react_state, version="v2"):
                 kind = event.get("event")
 
                 if kind == "on_tool_start":
@@ -574,15 +451,14 @@ class MultiStepAgentService:
                         sub_answer += token
                         yield ("thinking", index, token)
 
-            sources = self._last_search_sources_var.get()
             result = {
                 "sub_q": sub_q,
                 "answer": sub_answer or "检索未返回结果",
-                "sources": [s.model_dump() for s in sources],
+                "sources": [s.model_dump() for s in sources_container],
             }
             yield ("__result__", index, result)
         except Exception as e:
-            logger.error(f"Sub-question research failed: {sub_q} — {e}")
+            logger.error(f"Sub-question research failed: {sub_q} — {e}", exc_info=True)
             yield ("__result__", index, {
                 "sub_q": sub_q,
                 "answer": "检索失败",
@@ -596,12 +472,11 @@ class MultiStepAgentService:
         question: str,
         session_id: str,
         chat_history_messages: list[BaseMessage] | None = None,
+        user_id: int | None = None,
     ) -> AsyncIterator[str]:
         from backend.services.session_service import session_service
 
-        self._last_search_docs_var.set([])
-        self._last_search_sources_var.set([])
-
+        actual_user_id = user_id or 0
         history_text = self._format_history(session_id, chat_history_messages)
         all_sources: list[Source] = []
         final_answer = ""
@@ -639,7 +514,7 @@ class MultiStepAgentService:
                 async def producer(sub_q: str, idx: int):
                     await queue.put(("step", idx, {"text": f"正在处理: {sub_q}", "status": "running"}))
                     try:
-                        async for event in self._research_one_sub_q(sub_q, idx, session_id, history_text):
+                        async for event in self._research_one_sub_q(sub_q, idx, session_id, history_text, actual_user_id):
                             await queue.put(event)
                     except Exception as e:
                         logger.error(f"Producer task crashed for sub_q[{idx}] '{sub_q}': {e}", exc_info=True)

@@ -54,7 +54,7 @@ export default function LoginPage() {
     <div className="login-page">
       <div className="login-card">
         <h2>KnowRAG</h2>
-        <p className="subtitle">企业知识库管理系统</p>
+        <p className="subtitle">个人知识库管理系统</p>
 
         <div className="tabs">
           <button

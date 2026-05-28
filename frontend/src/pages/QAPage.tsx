@@ -195,6 +195,7 @@ export default function QAPage() {
   const [streamText, setStreamText] = useState('')
   const [streamSources, setStreamSources] = useState<Source[]>([])
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [thinkingSteps, setThinkingSteps] = useState<{ step: string; text: string }[]>([])
   const [agentMode, setAgentMode] = useState(false)
   interface SubTask {
     question: string
@@ -210,6 +211,11 @@ export default function QAPage() {
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const streamSourcesRef = useRef<Source[]>([])
+  const activeSidRef = useRef<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  // Keep ref in sync for closure-safe comparisons
+  useEffect(() => { activeSidRef.current = activeSid }, [activeSid])
 
   const loadSessions = useCallback(async () => {
     try { const r = await listSessions(); setSessions(r.sessions) } catch { /* */ }
@@ -229,7 +235,10 @@ export default function QAPage() {
   }
 
   const newChat = () => {
-    setActiveSid(null); setMessages([]); setStreamText(''); setCurrentRoute(''); setLastResponseTime(null); setSubTasks([])
+    abortRef.current = null
+    setActiveSid(null); setMessages([]); setStreamText(''); setStreaming(false)
+    setCurrentRoute(''); setLastResponseTime(null); setSubTasks([]); setThinkingSteps([])
+    setDecomposePlan(''); setReflectStatus(''); setStreamSources([]); streamSourcesRef.current = []
     setTimeout(() => inputRef.current?.focus(), 0)
   }
 
@@ -251,29 +260,50 @@ export default function QAPage() {
     const q = input.trim()
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setStreaming(true)
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setStreaming(true); setThinkingSteps([])
     const t0 = Date.now()
+    const targetSid = activeSid
+    const onTargetSession = () => activeSidRef.current === targetSid
+
+    const controller = new AbortController()
+    abortRef.current = controller
 
     await askQuestionStream(
       q, activeSid, 'auto', 5,
-      (t) => setStreamText(p => p + t),
-      (srcs, route) => { setStreamSources(srcs); streamSourcesRef.current = srcs; if (route) setCurrentRoute(route) },
+      (t) => { if (onTargetSession()) setStreamText(p => p + t) },
+      (srcs, route) => { if (onTargetSession()) { setStreamSources(srcs); streamSourcesRef.current = srcs; if (route) setCurrentRoute(route) }},
       (newId) => {
         const elapsed = Date.now() - t0
         const finalSources = streamSourcesRef.current
-        setStreamText(prev => {
-          setMessages(msgs => [...msgs, {
-            role: 'assistant', content: prev,
-            sources: finalSources.length > 0 ? finalSources : null,
-          }])
-          return ''
-        })
-        if (!activeSid) setActiveSid(newId)
-        setLastResponseTime(elapsed)
+        if (onTargetSession()) {
+          setStreamText(prev => {
+            setMessages(msgs => [...msgs, {
+              role: 'assistant', content: prev,
+              sources: finalSources.length > 0 ? finalSources : null,
+            }])
+            return ''
+          })
+          if (!activeSid) setActiveSid(newId)
+          setLastResponseTime(elapsed)
+          setThinkingSteps([])
+        }
         setStreaming(false)
         loadSessions()
+        abortRef.current = null
       },
-      (err) => { alert('请求失败: ' + err.message); setStreaming(false) },
+      (err) => {
+        if (err.name === 'AbortError') {
+          // 用户手动终止，不弹提示
+          abortRef.current = null
+          setStreaming(false)
+          return
+        }
+        if (onTargetSession()) { setThinkingSteps([]); alert('请求失败: ' + err.message) }
+        setStreaming(false)
+        abortRef.current = null
+      },
+      (step, text) => { if (onTargetSession()) setThinkingSteps(prev => [...prev, { step, text }]) },
+      controller.signal,
     )
   }
 
@@ -282,36 +312,55 @@ export default function QAPage() {
     const q = input.trim()
     setInput('')
     setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setSubTasks([]); setDecomposePlan(''); setReflectStatus(''); setStreaming(true)
+    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setSubTasks([]); setDecomposePlan(''); setReflectStatus(''); setThinkingSteps([]); setStreaming(true)
     const t0 = Date.now()
+    const targetSid = activeSid
+    const onTargetSession = () => activeSidRef.current === targetSid
+
+    const controller = new AbortController()
+    abortRef.current = controller
 
     await askAgentStream(
       q, activeSid,
       (subQ, toolName) => {
+        if (!onTargetSession()) return
         setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, toolStatus: toolName } : t))
       },
-      (t) => setStreamText(p => p + t),
-      (srcs) => { setStreamSources(srcs); streamSourcesRef.current = srcs },
+      (t) => { if (onTargetSession()) setStreamText(p => p + t) },
+      (srcs) => { if (onTargetSession()) { setStreamSources(srcs); streamSourcesRef.current = srcs }},
       (newId) => {
         const elapsed = Date.now() - t0
         const finalSources = streamSourcesRef.current
-        setStreamText(prev => {
-          setMessages(msgs => [...msgs, {
-            role: 'assistant', content: prev,
-            sources: finalSources.length > 0 ? finalSources : null,
-          }])
-          return ''
-        })
-        if (!activeSid) setActiveSid(newId)
-        setLastResponseTime(elapsed)
+        if (onTargetSession()) {
+          setStreamText(prev => {
+            setMessages(msgs => [...msgs, {
+              role: 'assistant', content: prev,
+              sources: finalSources.length > 0 ? finalSources : null,
+            }])
+            return ''
+          })
+          if (!activeSid) setActiveSid(newId)
+          setLastResponseTime(elapsed)
+          setSubTasks([])
+          setDecomposePlan('')
+          setReflectStatus('')
+        }
         setStreaming(false)
-        setSubTasks([])
-        setDecomposePlan('')
-        setReflectStatus('')
         loadSessions()
+        abortRef.current = null
       },
-      (err) => { alert('Agent error: ' + err.message); setStreaming(false) },
+      (err) => {
+        if (err.name === 'AbortError') {
+          abortRef.current = null
+          setStreaming(false)
+          return
+        }
+        if (onTargetSession()) { alert('Agent error: ' + err.message) }
+        setStreaming(false)
+        abortRef.current = null
+      },
       (msg, subQuestions) => {
+        if (!onTargetSession()) return
         setDecomposePlan(msg)
         setSubTasks(subQuestions.map(q => ({
           question: q,
@@ -322,12 +371,15 @@ export default function QAPage() {
         })))
       },
       (subQ, text, status) => {
+        if (!onTargetSession()) return
         setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, status: status as SubTask['status'], toolStatus: status === 'done' ? '' : t.toolStatus } : t))
       },
-      (msg) => setReflectStatus(msg),
+      (msg) => { if (onTargetSession()) setReflectStatus(msg) },
       (subQ, token) => {
+        if (!onTargetSession()) return
         setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, thinking: t.thinking + token } : t))
       },
+      controller.signal,
     )
   }
 
@@ -427,6 +479,56 @@ export default function QAPage() {
                     ) : (
                       <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>思考中...</span>
                     )}
+                    {/* 思考过程（普通模式） */}
+                    {thinkingSteps.length > 0 && (
+                      <div style={{
+                        marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4,
+                      }}>
+                        {thinkingSteps.map((st, i) => {
+                          const s = st.step
+                          const bg =
+                            s === 'intent' ? '#ede9fe' :
+                            s === 'route' ? '#ede9fe' :
+                            s === 'rewrite' || s === 'sub_queries' ? '#dbeafe' :
+                            s === 'vector' || s === 'vector_result' ? '#dcfce7' :
+                            s === 'bm25' || s === 'bm25_result' ? '#dcfce7' :
+                            s === 'hyde' || s === 'hyde_search' || s === 'hyde_result' || s === 'hyde_answer' ? '#fce7f3' :
+                            s === 'rrf' || s === 'rrf_done' ? '#fef3c7' :
+                            s === 'rerank' || s === 'rerank_done' ? '#ffedd5' :
+                            s === 'expand' ? '#e0f2fe' :
+                            s === 'cache' ? '#f1f5f9' :
+                            s === 'synthesize' ? '#f0fdf4' :
+                            '#f8fafc'
+                          const icon =
+                            s === 'intent' ? '🎯' :
+                            s === 'route' ? '🎯' :
+                            s === 'rewrite' ? '✏️' :
+                            s === 'sub_queries' ? '🔀' :
+                            s === 'vector' || s === 'vector_result' ? '🔍' :
+                            s === 'bm25' || s === 'bm25_result' ? '📖' :
+                            s === 'hyde' || s === 'hyde_search' || s === 'hyde_result' ? '🧠' :
+                            s === 'hyde_answer' ? '💡' :
+                            s === 'rrf' || s === 'rrf_done' ? '⚡' :
+                            s === 'rerank' || s === 'rerank_done' ? '📊' :
+                            s === 'expand' ? '📦' :
+                            s === 'cache' ? '💾' :
+                            s === 'synthesize' ? '🤖' :
+                            s === 'start' ? '🚀' :
+                            '💭'
+                          return (
+                            <div key={i} style={{
+                              display: 'flex', alignItems: 'flex-start', gap: 6,
+                              padding: '5px 10px', borderRadius: 6,
+                              background: bg, fontSize: 12, color: '#475569', lineHeight: 1.5,
+                            }}>
+                              <span style={{ fontSize: 10, flexShrink: 0, marginTop: 2 }}>{icon}</span>
+                              <span>{st.text}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
                     {/* SubTask 卡片 */}
                     {subTasks.length > 0 && (
                       <div style={{
@@ -576,9 +678,22 @@ export default function QAPage() {
               onFocus={(e) => { e.target.style.borderColor = 'var(--primary)'; e.target.style.background = '#fff' }}
               onBlur={(e) => { e.target.style.borderColor = '#e2e8f0'; e.target.style.background = '#f8fafc' }}
             />
-            <button style={sendBtn(!streaming && input.trim().length > 0)} onClick={send} disabled={streaming || !input.trim()}>
-              {streaming ? '···' : '发送'}
-            </button>
+            {streaming ? (
+              <button
+                onClick={() => { abortRef.current?.abort() }}
+                style={{
+                  padding: '9px 22px', background: '#fee2e2', color: '#991b1b',
+                  border: 'none', borderRadius: 8, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 600, flexShrink: 0,
+                }}
+              >
+                停止
+              </button>
+            ) : (
+              <button style={sendBtn(input.trim().length > 0)} onClick={send} disabled={!input.trim()}>
+                发送
+              </button>
+            )}
           </div>
         </div>
       </div>

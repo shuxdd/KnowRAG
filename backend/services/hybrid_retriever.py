@@ -18,6 +18,8 @@
 """
 
 import asyncio
+import concurrent.futures
+import contextvars
 import hashlib
 import json
 import logging
@@ -39,6 +41,21 @@ from backend.services.parent_store import parent_store
 logger = logging.getLogger(__name__)
 
 CACHE_PREFIX = "retrieval:"
+
+# 用于向外部暴露检索中间过程的 contextvar
+_last_hyde_answer: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_last_hyde_answer", default=""
+)
+_retrieval_progress: contextvars.ContextVar[list[dict]] = contextvars.ContextVar(
+    "_retrieval_progress", default=[]
+)
+
+
+def _record_progress(stage: str, text: str):
+    """Append a progress entry for the current retrieval."""
+    entries = _retrieval_progress.get()
+    entries.append({"stage": stage, "text": text})
+    _retrieval_progress.set(entries)
 
 
 class RetrievalCache:
@@ -210,8 +227,6 @@ class HybridRetriever(BaseRetriever):
     # 从每个检索器获取的候选文档数量
     fetch_k: int = 10
 
-    parent_crop_paragraphs: int = 3
-
     def __init__(self, **kwargs):
         """
         初始化混合检索器
@@ -219,11 +234,10 @@ class HybridRetriever(BaseRetriever):
         初始化 HyDE 专用的 LLM（用于生成假设答案）
         """
         super().__init__(**kwargs)
-        self.parent_crop_paragraphs = kwargs.get("parent_crop_paragraphs", 3)
         self._hyde_llm = ChatOpenAI(
-            model=settings.qwen_model,
-            api_key=settings.qwen_api_key,
-            base_url=settings.qwen_base_url,
+            model=settings.mimo_model,
+            api_key=settings.mimo_api_key,
+            base_url=settings.mimo_base_url,
             temperature=0.3,
             request_timeout=10,
         )
@@ -273,49 +287,23 @@ class HybridRetriever(BaseRetriever):
             if not hyde_answer:
                 return []
 
-            # 将原始问题与假设答案拼接
-            # 拼接后的文本既包含查询意图，又包含答案的语义信息
             combined = f"{query}\n{hyde_answer}"
-
-            # 临时扩大向量检索的 k 值，获取更多候选文档
-            orig_k = self.vector_retriever.search_kwargs.get("k", 4)
-            self.vector_retriever.search_kwargs["k"] = top_k
-            # 执行向量检索
-            docs = self.vector_retriever.invoke(combined)
-            # 恢复原来的 k 值
-            self.vector_retriever.search_kwargs["k"] = orig_k
-
+            _last_hyde_answer.set(hyde_answer)
+            _record_progress("hyde", f"HyDE 生成假设答案 ({len(hyde_answer)} 字): {hyde_answer[:120]}...")
+            docs = self.vector_retriever.search_with_k(combined, k=top_k)
+            _record_progress("hyde_search", f"HyDE 向量检索: 找到 {len(docs)} 个候选块")
             return docs
         except Exception:
             logger.warning("HyDE search failed, skipping HyDE branch", exc_info=True)
             return []
 
-    def _crop_parent(self, query: str, content: str) -> str:
-        """Keep only the top paragraphs by reranker score against query."""
-        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
-        if len(paragraphs) <= self.parent_crop_paragraphs:
-            return content
-
-        from backend.services.reranker import reranker
-
-        para_docs = [Document(page_content=p) for p in paragraphs]
-        scored = reranker.rerank(query, para_docs, top_n=len(paragraphs))
-        top_paras = sorted(
-            scored,
-            key=lambda d: d.metadata.get("score", 0),
-            reverse=True,
-        )[:self.parent_crop_paragraphs]
-        # Restore original order
-        top_paras.sort(key=lambda d: paragraphs.index(d.page_content))
-        return "\n\n".join(d.page_content for d in top_paras)
-
     @staticmethod
     def _should_hyde(query: str) -> bool:
-        """HyDE is triggered for short or vague queries that lack semantic signals."""
-        if len(query) < 20:
+        """HyDE 只对极度模糊的查询触发：很短 + 典型模糊词。"""
+        vague = ["是什么", "什么叫", "什么是", "干啥", "干吗"]
+        if len(query) < 6 and any(w in query for w in vague):
             return True
-        vague = ["是什么", "怎么", "如何", "什么叫", "什么是", "怎么做", "怎样", "干啥", "干吗"]
-        return any(w in query for w in vague)
+        return False
 
     def _expand_to_parents(self, leaves: list[Document], top_n: int, query: str = "") -> list[Document]:
         parent_ids_ordered: list[str] = []
@@ -335,7 +323,7 @@ class HybridRetriever(BaseRetriever):
             if pid not in parent_map:
                 continue
             p = parent_map[pid]
-            content = self._crop_parent(query, p.content) if query else p.content
+            content = p.content
             ordered_docs.append(Document(
                 page_content=content,
                 metadata={
@@ -349,35 +337,62 @@ class HybridRetriever(BaseRetriever):
             ))
         return ordered_docs[:top_n]
 
-    def _fast_retrieve(self, query: str, top_k: int) -> list[Document]:
+    def _fast_retrieve(self, query: str, top_k: int, user_id: int | None = None) -> list[Document]:
         """Fast strategy: vector retrieval only, no BM25/HyDE/Reranker."""
-        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
-        self.vector_retriever.search_kwargs["k"] = top_k * 2
-        docs = self.vector_retriever.invoke(query)
-        self.vector_retriever.search_kwargs["k"] = orig_k
-        return self._expand_to_parents(docs, top_n=top_k, query=query)
+        _last_hyde_answer.set("")
+        _retrieval_progress.set([])
+        _record_progress("vector", f"向量检索: 搜索与问题语义相似的叶子块...")
+        docs = self.vector_retriever.search_with_k(query, k=top_k * 2, user_id=user_id)
+        _record_progress("vector_result", f"向量检索: 找到 {len(docs)} 个候选块")
+        result = self._expand_to_parents(docs, top_n=top_k, query=query)
+        _record_progress("expand", f"展开到父块: {len(docs)} 个叶子块 → {len(result)} 个父块")
+        return result
 
-    def _precise_retrieve(self, query: str, top_k: int) -> list[Document]:
-        """Precise strategy: vector + BM25 -> RRF fusion, HyDE on demand."""
-        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
+    def _precise_retrieve(self, query: str, top_k: int, user_id: int | None = None) -> list[Document]:
+        """Precise strategy: vector + BM25 -> RRF fusion, HyDE on demand (parallel)."""
+        _last_hyde_answer.set("")
+        _retrieval_progress.set([])
         fetch_k = self.fetch_k if self.fetch_k else 10
+        use_hyde = self._should_hyde(query)
 
-        self.vector_retriever.search_kwargs["k"] = fetch_k
-        vec_docs = self.vector_retriever.invoke(query)
-        self.vector_retriever.search_kwargs["k"] = orig_k
+        _record_progress("start", f"开始检索 (策略: precise, 获取 {fetch_k} 候选, HyDE: {'是' if use_hyde else '否'})")
 
-        bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            f_vec = ex.submit(self.vector_retriever.search_with_k, query, fetch_k, user_id)
+            _record_progress("vector", "向量检索: 并行执行语义搜索...")
+            f_bm25 = ex.submit(self.bm25_retriever.invoke, query)
+            _record_progress("bm25", "BM25 检索: 并行执行关键词搜索...")
+            f_hyde = ex.submit(self._hyde_search, query, fetch_k) if use_hyde else None
+
+            vec_docs = f_vec.result()
+            bm25_raw = f_bm25.result()
+            hyde_docs = f_hyde.result() if f_hyde else []
+
+        _record_progress("vector_result", f"向量检索完成: {len(vec_docs)} 个候选块")
+        _record_progress("bm25_result", f"BM25 检索完成: {len(bm25_raw)} 个候选块")
+
+        if user_id is not None:
+            bm25_raw = [d for d in bm25_raw if d.metadata.get("user_id") == user_id]
+        bm25_docs = bm25_raw[:fetch_k]
 
         doc_lists = [vec_docs, bm25_docs]
-        if self._should_hyde(query):
-            hyde_docs = self._hyde_search(query, top_k=fetch_k)
+        if hyde_docs:
             doc_lists.append(hyde_docs)
+            _record_progress("hyde_result", f"HyDE 检索完成: {len(hyde_docs)} 个候选块")
 
+        total_candidates = sum(len(dl) for dl in doc_lists)
+        _record_progress("rrf", f"RRF 融合: 合并 {len(doc_lists)} 路共 {total_candidates} 个候选块 → Top {top_k}")
         fused = rrf_fusion(doc_lists, k=self.rrf_k, top_n=top_k)
-        return self._expand_to_parents(fused, top_n=top_k, query=query)
+        _record_progress("rrf_done", f"RRF 融合完成: {len(fused)} 个结果")
 
-    def _deep_retrieve(self, query: str, top_k: int) -> list[Document]:
-        """Deep strategy: vector + BM25 -> RRF -> Reranker, HyDE on demand."""
+        result = self._expand_to_parents(fused, top_n=top_k, query=query)
+        _record_progress("expand", f"展开到父块: {len(fused)} 个叶子块 → {len(result)} 个父块")
+        return result
+
+    def _deep_retrieve(self, query: str, top_k: int, user_id: int | None = None) -> list[Document]:
+        """Deep strategy: vector + BM25 -> RRF -> Reranker, HyDE on demand (parallel)."""
+        _last_hyde_answer.set("")
+        _retrieval_progress.set([])
         use_hyde = self._should_hyde(query)
         cache_key = retrieval_cache.build_cache_key(
             namespace="hybrid_deep",
@@ -388,27 +403,45 @@ class HybridRetriever(BaseRetriever):
         )
         cached = retrieval_cache.get(cache_key, label=query)
         if cached:
+            _record_progress("cache", "缓存命中，直接返回上次结果")
             return cached[:top_k]
 
         from backend.services.reranker import reranker
 
-        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
         fetch_k = self.fetch_k if self.fetch_k else 10
+        _record_progress("start", f"开始深度检索 (获取 {fetch_k} 候选, HyDE: {'是' if use_hyde else '否'})")
 
-        self.vector_retriever.search_kwargs["k"] = fetch_k
-        vec_docs = self.vector_retriever.invoke(query)
-        self.vector_retriever.search_kwargs["k"] = orig_k
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            f_vec = ex.submit(self.vector_retriever.search_with_k, query, fetch_k, user_id)
+            _record_progress("vector", "向量检索: 并行执行语义搜索...")
+            f_bm25 = ex.submit(self.bm25_retriever.invoke, query)
+            _record_progress("bm25", "BM25 检索: 并行执行关键词搜索...")
+            f_hyde = ex.submit(self._hyde_search, query, fetch_k) if use_hyde else None
 
-        bm25_docs = self.bm25_retriever.invoke(query)[:fetch_k]
+            vec_docs = f_vec.result()
+            bm25_raw = f_bm25.result()
+            hyde_docs = f_hyde.result() if f_hyde else []
+
+        _record_progress("vector_result", f"向量检索完成: {len(vec_docs)} 个候选块")
+        _record_progress("bm25_result", f"BM25 检索完成: {len(bm25_raw)} 个候选块")
+
+        if user_id is not None:
+            bm25_raw = [d for d in bm25_raw if d.metadata.get("user_id") == user_id]
+        bm25_docs = bm25_raw[:fetch_k]
 
         doc_lists = [vec_docs, bm25_docs]
-        if use_hyde:
-            hyde_docs = self._hyde_search(query, top_k=fetch_k)
+        if hyde_docs:
             doc_lists.append(hyde_docs)
+            _record_progress("hyde_result", f"HyDE 检索完成: {len(hyde_docs)} 个候选块")
 
+        total_candidates = sum(len(dl) for dl in doc_lists)
+        _record_progress("rrf", f"RRF 融合: 合并 {len(doc_lists)} 路共 {total_candidates} 个候选块 → Top 10")
         fused = rrf_fusion(doc_lists, k=self.rrf_k, top_n=10)
+        _record_progress("rerank", f"CrossEncoder 重排序: 对 {len(fused)} 个候选块重新打分排序")
         reranked = reranker.rerank(query, fused, top_n=top_k)
+        _record_progress("rerank_done", f"重排序完成: {len(reranked)} 个结果")
         result = self._expand_to_parents(reranked, top_n=top_k, query=query)
+        _record_progress("expand", f"展开到父块: {len(reranked)} 个叶子块 → {len(result)} 个父块")
         retrieval_cache.set(cache_key, result, label=query)
         return result
 
@@ -431,31 +464,27 @@ class HybridRetriever(BaseRetriever):
 
         from backend.services.reranker import reranker
 
-        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
         fetch_k = self.fetch_k if self.fetch_k else 10
 
-        self.vector_retriever.search_kwargs["k"] = fetch_k
-        try:
-            async def _vec():
-                return await self.vector_retriever.ainvoke(query)
+        async def _vec():
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self.vector_retriever.search_with_k, query, fetch_k)
 
-            async def _bm25():
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(None, self.bm25_retriever.invoke, query)
+        async def _bm25():
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self.bm25_retriever.invoke, query)
 
-            async def _hyde():
-                loop = asyncio.get_event_loop()
-                return await loop.run_in_executor(None, self._hyde_search, query, fetch_k)
+        async def _hyde():
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._hyde_search, query, fetch_k)
 
-            if use_hyde:
-                vec_docs, bm25_raw, hyde_docs = await asyncio.gather(
-                    _vec(), _bm25(), _hyde()
-                )
-            else:
-                vec_docs, bm25_raw = await asyncio.gather(_vec(), _bm25())
-                hyde_docs = []
-        finally:
-            self.vector_retriever.search_kwargs["k"] = orig_k
+        if use_hyde:
+            vec_docs, bm25_raw, hyde_docs = await asyncio.gather(
+                _vec(), _bm25(), _hyde()
+            )
+        else:
+            vec_docs, bm25_raw = await asyncio.gather(_vec(), _bm25())
+            hyde_docs = []
 
         bm25_docs = bm25_raw[:fetch_k]
 
@@ -483,6 +512,10 @@ class _VectorServiceRetriever(BaseRetriever):
     async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
         return self._get_relevant_documents(query, run_manager=run_manager)
 
+    def search_with_k(self, query: str, k: int, user_id: int | None = None) -> list[Document]:
+        """Thread-safe search with explicit k, bypassing shared search_kwargs."""
+        return self.vector_service.similarity_search(query, k=k, user_id=user_id)
+
 
 def _build_hybrid_retriever() -> HybridRetriever:
     from backend.services.vector_service import vector_service
@@ -503,3 +536,10 @@ def _build_hybrid_retriever() -> HybridRetriever:
 
 
 hybrid_retriever: HybridRetriever = _build_hybrid_retriever()
+
+# 导出 progress/thinking 工具供外部读取
+def get_last_hyde_answer() -> str:
+    return _last_hyde_answer.get()
+
+def get_retrieval_progress() -> list[dict]:
+    return _retrieval_progress.get()

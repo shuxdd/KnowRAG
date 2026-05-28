@@ -13,7 +13,7 @@
     --limit: 限制评估的问题数量（0 = 全部）
 
 输出：
-    - 每个策略的平均指标（faithfulness, context_recall, context_precision, answer_correctness, answer_accuracy）
+    - 每个策略的平均指标（faithfulness, context_recall, context_precision, answer_relevancy）
     - 评估完成后可通过 API 查看详细结果：/api/eval/results
 """
 
@@ -43,6 +43,12 @@ def main():
         default=0,
         help="limit question count (0 = all)",
     )
+    parser.add_argument(
+        "--user-id",
+        type=int,
+        default=1,
+        help="user ID for document isolation (default: 1)",
+    )
     args = parser.parse_args()
 
     strategies = ["fast", "precise", "deep"] if args.strategy == "all" else [args.strategy]
@@ -56,9 +62,9 @@ def main():
     for strategy in strategies:
         print(f"\n[{strategy}] Running evaluation...")
         started = time.time()
-        run_id = eval_service.run_evaluation(strategy=strategy, limit=args.limit)
+        run_id = eval_service.run_evaluation(strategy=strategy, limit=args.limit, user_id=args.user_id)
         elapsed = time.time() - started
-        detail = eval_service.get_run_detail(run_id)
+        detail = eval_service.get_run_detail(run_id, user_id=args.user_id)
 
         print(f"  Completed in {elapsed:.1f}s")
         print(f"  Status: {detail.get('status')}")
@@ -69,8 +75,7 @@ def main():
             "avg_faithfulness",
             "avg_context_recall",
             "avg_context_precision",
-            "avg_answer_correctness",
-            "avg_answer_accuracy",
+            "avg_answer_relevancy",
         ]:
             label = metric.replace("avg_", "")
             value = detail.get(metric)

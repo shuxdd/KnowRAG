@@ -111,15 +111,15 @@ class QueryRewriter:
 
     def __init__(self):
         self.llm = ChatOpenAI(
-            model=settings.qwen_model,
-            api_key=settings.qwen_api_key,
-            base_url=settings.qwen_base_url,
+            model=settings.mimo_model,
+            api_key=settings.mimo_api_key,
+            base_url=settings.mimo_base_url,
             temperature=0.0,
             request_timeout=5,
         )
         self.prompt = ChatPromptTemplate.from_template(REWRITE_PROMPT)
 
-    def rewrite(self, query: str, chat_history: str = "(无历史对话)") -> dict:
+    def rewrite(self, query: str, chat_history: str = "") -> dict:
         """
         改写查询
 

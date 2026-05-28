@@ -45,7 +45,7 @@ alembic upgrade head
 - **三个数据库**：PostgreSQL 存父块、会话、消息和评估结果（端口 5433），Milvus 存叶子向量（端口 19530），ChromaDB 已弃用
 - **CORS**：后端仅允许 `http://localhost:5173`。Vite 将 `/api` 代理到 `localhost:8000`
 - **HuggingFace 镜像**：多处设置 `HF_ENDPOINT=https://hf-mirror.com` 用于国内网络
-- **LLM**：通过 DashScope 调用 Qwen（OpenAI 兼容 API），在 `.env` 中配置 `QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_MODEL`
+- **LLM**：通过 Mimo 调用（OpenAI 兼容 API），在 `.env` 中配置 `MIMO_API_KEY`、`MIMO_BASE_URL`、`MIMO_MODEL`
 - **启动时**：Alembic 自动迁移到最新版本，预加载模型（reranker CrossEncoder + embedding 预热）
 - **配置**：`backend/config.py` 通过 pydantic-settings 读取 `.env`，所有配置项均设有本地开发默认值
 - **测试原则**：仅在以下情况运行测试：1) 用户明确要求 2) 涉及核心检索/分块/Agent 逻辑的修改 3) 验证 bug 修复。小改动（格式调整、配置文件、前端样式等）无需跑测试，导入检查即可

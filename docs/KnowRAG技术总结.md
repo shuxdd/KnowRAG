@@ -259,7 +259,7 @@ python -m backend.eval_cli --strategy all --limit 10
 - Docker PostgreSQL 运行中（父块存储）
 - ChromaDB 有数据（需先上传文档）
 - Redis 运行中（检索缓存）
-- QWEN_API_KEY 有效
+- MIMO_API_KEY 有效
 
 ---
 

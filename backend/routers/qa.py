@@ -25,7 +25,10 @@
 - 流式返回答案（SSE 格式）
 """
 
-from fastapi import APIRouter, HTTPException
+import json
+import logging
+
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from backend.models.schemas import (
     QuestionRequest,
@@ -43,6 +46,9 @@ from backend.models.schemas import (
 from backend.services.qa_service import qa_service
 from backend.services.session_service import session_service
 from backend.services.agent_service import agent_service
+from backend.utils.auth import get_current_user, CurrentUser
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/qa", tags=["qa"])
 
@@ -50,7 +56,10 @@ router = APIRouter(prefix="/api/qa", tags=["qa"])
 # === V1 接口（基础问答） ===
 
 @router.post("/ask", response_model=QuestionResponse)
-async def ask_question(req: QuestionRequest):
+async def ask_question(
+    req: QuestionRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     非流式问答接口（V1）
 
@@ -60,19 +69,27 @@ async def ask_question(req: QuestionRequest):
     Returns:
         包含答案和来源信息的响应
     """
-    result = qa_service.ask(
-        question=req.question,
-        strategy=req.strategy,
-        top_k=req.top_k,
-    )
-    return QuestionResponse(
-        answer=result["answer"],
-        sources=result["sources"],
-    )
+    try:
+        result = qa_service.ask(
+            question=req.question,
+            strategy=req.strategy,
+            top_k=req.top_k,
+            user_id=current_user.id,
+        )
+        return QuestionResponse(
+            answer=result["answer"],
+            sources=result["sources"],
+        )
+    except Exception as e:
+        logger.error(f"Ask endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"问答处理失败: {str(e)}")
 
 
 @router.post("/search", response_model=SearchResponse)
-async def search_documents(req: SearchRequest):
+async def search_documents(
+    req: SearchRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     文档检索接口（V1）
 
@@ -82,26 +99,34 @@ async def search_documents(req: SearchRequest):
     Returns:
         检索结果列表，包含文档内容、文件名和相关性分数
     """
-    docs = qa_service.search(
-        query=req.query,
-        strategy=req.strategy,
-        top_k=req.top_k,
-    )
-    results = [
-        SearchResult(
-            content=doc.page_content,
-            filename=doc.metadata.get("filename", "unknown"),
-            score=doc.metadata.get("score", 0.0),
+    try:
+        docs = qa_service.search(
+            query=req.query,
+            strategy=req.strategy,
+            top_k=req.top_k,
+            user_id=current_user.id,
         )
-        for doc in docs
-    ]
-    return SearchResponse(results=results)
+        results = [
+            SearchResult(
+                content=doc.page_content,
+                filename=doc.metadata.get("filename", "unknown"),
+                score=doc.metadata.get("score", 0.0),
+            )
+            for doc in docs
+        ]
+        return SearchResponse(results=results)
+    except Exception as e:
+        logger.error(f"Search endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"检索失败: {str(e)}")
 
 
 # === V2: 流式问答接口 ===
 
 @router.post("/ask/stream")
-async def ask_stream(req: QuestionRequest):
+async def ask_stream(
+    req: QuestionRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     流式问答接口（V2）
     支持 SSE（Server-Sent Events）流式输出和会话管理
@@ -113,22 +138,32 @@ async def ask_stream(req: QuestionRequest):
         StreamingResponse，SSE 格式的数据流
         - sources: 检索来源信息（首包）
         - token: LLM 生成的文本片段
+        - error: 错误信息（如发生）
         - done: 结束标识
     """
-    # 如果没有提供 session_id，自动创建一个新会话
-    session_id = req.session_id or session_service.create_session()
+    session_id = req.session_id or session_service.create_session(user_id=current_user.id)
+
+    async def safe_stream():
+        try:
+            async for event in qa_service.ask_stream(
+                question=req.question,
+                session_id=session_id,
+                strategy=req.strategy,
+                top_k=req.top_k,
+                user_id=current_user.id,
+            ):
+                yield event
+        except Exception as e:
+            logger.error(f"Ask stream error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'data': f'问答处理失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+
     return StreamingResponse(
-        qa_service.ask_stream(
-            question=req.question,
-            session_id=session_id,
-            strategy=req.strategy,
-            top_k=req.top_k,
-        ),
+        safe_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Session-Id": session_id,  # 返回新创建的会话 ID
+            "X-Session-Id": session_id,
         },
     )
 
@@ -136,21 +171,34 @@ async def ask_stream(req: QuestionRequest):
 # === V3: Agent 流式问答接口 ===
 
 @router.post("/agent")
-async def ask_agent(req: AgentRequest):
+async def ask_agent(
+    req: AgentRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Agent 流式问答接口 (V3)
     使用 LangGraph Agent 自主决定检索策略和工具调用
 
-    SSE 事件: tool → token → sources → error (如发生) → done
+    SSE 事件: decompose → step → tool → thinking → token → reflect → sources → error (如发生) → done
     """
-    session_id = req.session_id or session_service.create_session()
+    session_id = req.session_id or session_service.create_session(user_id=current_user.id)
     history = session_service.get_history(session_id)
+
+    async def safe_stream():
+        try:
+            async for event in agent_service.ask_stream(
+                question=req.question,
+                session_id=session_id,
+                chat_history_messages=history.messages if history else None,
+                user_id=current_user.id,
+            ):
+                yield event
+        except Exception as e:
+            logger.error(f"Agent stream error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'data': f'Agent 处理失败: {str(e)}'}, ensure_ascii=False)}\n\n"
+
     return StreamingResponse(
-        agent_service.ask_stream(
-            question=req.question,
-            session_id=session_id,
-            chat_history_messages=history.messages if history else None,
-        ),
+        safe_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -163,14 +211,16 @@ async def ask_agent(req: AgentRequest):
 # === V2: 会话管理接口 ===
 
 @router.get("/sessions", response_model=SessionListResponse)
-async def list_sessions():
+async def list_sessions(
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     获取会话列表接口（V2）
 
     Returns:
         所有会话的列表，按最后更新时间降序排列
     """
-    sessions = session_service.list_sessions()
+    sessions = session_service.list_sessions(user_id=current_user.id)
     return SessionListResponse(
         sessions=[SessionInfo(**s) for s in sessions]
     )
@@ -210,7 +260,10 @@ async def get_session(session_id: str):
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(
+    session_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     删除指定会话（V2）
 
@@ -223,6 +276,6 @@ async def delete_session(session_id: str):
     Raises:
         HTTPException: 如果会话不存在，返回 404 错误
     """
-    if not session_service.delete_session(session_id):
+    if not session_service.delete_session(session_id, user_id=current_user.id):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"detail": "deleted"}

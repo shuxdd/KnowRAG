@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "skills": {
+    "interview-simulator": {
+      "name": "Interview Simulator",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=interview-simulator",
+      "source": "community",
+      "version": "1.0.0",
+      "installedAt": "2026-05-28T08:15:12Z"
+    }
+  }
+}

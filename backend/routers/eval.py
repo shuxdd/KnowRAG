@@ -13,8 +13,7 @@
 - faithfulness: 答案忠诚度（答案与上下文的吻合程度）
 - context_recall: 上下文召回率（上下文覆盖真实答案的程度）
 - context_precision: 上下文精确度（上下文相关内容的比例）
-- answer_correctness: 答案正确性（与标准答案的对比）
-- answer_accuracy: 答案准确率（基于 LLM 评判）
+- answer_relevancy: 答案相关性（答案与问题的相关程度）
 
 评估流程：
 1. 加载测试数据集（QA 对）
@@ -23,29 +22,35 @@
 4. 存储评估结果
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from backend.models.schemas import (
     EvalListResponse, EvalRunDetail, EvalRunInfo, EvalRunRequest,
 )
 from backend.services.eval_service import eval_service
+from backend.utils.auth import get_current_user, CurrentUser
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
 
 
 @router.get("/results", response_model=EvalListResponse)
-async def list_eval_runs():
+async def list_eval_runs(
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     获取评估历史列表接口（V3）
 
     Returns:
         所有评估运行的列表，按开始时间降序排列
     """
-    runs = eval_service.get_runs()
+    runs = eval_service.get_runs(user_id=current_user.id)
     return EvalListResponse(runs=[EvalRunInfo(**r) for r in runs])
 
 
 @router.get("/results/{run_id}", response_model=EvalRunDetail)
-async def get_eval_run(run_id: str):
+async def get_eval_run(
+    run_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     获取指定评估运行的详细信息（V3）
 
@@ -61,7 +66,7 @@ async def get_eval_run(run_id: str):
     Raises:
         HTTPException: 如果评估运行不存在，返回 404 错误
     """
-    detail = eval_service.get_run_detail(run_id)
+    detail = eval_service.get_run_detail(run_id, user_id=current_user.id)
     if not detail:
         raise HTTPException(status_code=404, detail="Evaluation run not found")
     return EvalRunDetail(
@@ -75,8 +80,7 @@ async def get_eval_run(run_id: str):
         avg_faithfulness=detail.get("avg_faithfulness"),
         avg_context_recall=detail.get("avg_context_recall"),
         avg_context_precision=detail.get("avg_context_precision"),
-        avg_answer_correctness=detail.get("avg_answer_correctness"),
-        avg_answer_accuracy=detail.get("avg_answer_accuracy"),
+        avg_answer_relevancy=detail.get("avg_answer_relevancy"),
         results=[
             {
                 "question": r["question"],
@@ -87,8 +91,7 @@ async def get_eval_run(run_id: str):
                 "faithfulness": r.get("faithfulness"),
                 "context_recall": r.get("context_recall"),
                 "context_precision": r.get("context_precision"),
-                "answer_correctness": r.get("answer_correctness"),
-                "answer_accuracy": r.get("answer_accuracy"),
+                "answer_relevancy": r.get("answer_relevancy"),
             }
             for r in detail["results"]
         ],
@@ -96,15 +99,21 @@ async def get_eval_run(run_id: str):
 
 
 @router.delete("/results/{run_id}")
-async def delete_eval_run(run_id: str):
-    deleted = eval_service.delete_run(run_id)
+async def delete_eval_run(
+    run_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    deleted = eval_service.delete_run(run_id, user_id=current_user.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Evaluation run not found")
     return {"detail": f"Evaluation run {run_id} deleted"}
 
 
 @router.post("/run")
-async def trigger_eval(req: EvalRunRequest):
+async def trigger_eval(
+    req: EvalRunRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     触发新的评估运行接口（V3）
 
@@ -115,5 +124,5 @@ async def trigger_eval(req: EvalRunRequest):
     Returns:
         包含新创建的评估运行 ID
     """
-    run_id = eval_service.run_evaluation(strategy=req.strategy)
+    run_id = eval_service.run_evaluation(strategy=req.strategy, user_id=current_user.id)
     return {"run_id": run_id}

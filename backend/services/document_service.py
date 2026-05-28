@@ -17,6 +17,7 @@
 
 import os
 import uuid
+import hashlib
 import logging
 from typing import Tuple
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
@@ -92,10 +93,10 @@ class DocumentService:
         )
         self.chunker = HierarchicalChunker()
 
-    def process_file(self, filepath: str, filename: str) -> str:
+    def process_file(self, filepath: str, filename: str, user_id: int = 0) -> str:
         # Dedup: remove existing chunks before re-processing the same filename
-        parent_store.delete_by_filename(filename)
-        vector_service.delete_by_filename(filename)
+        parent_store.delete_by_filename(filename, user_id=user_id)
+        vector_service.delete_by_filename(filename, user_id=user_id)
 
         ext = _normalize_ext(filename)
         parser = _get_parser(ext)
@@ -107,16 +108,11 @@ class DocumentService:
             logger.warning(f"{filename}: structured parsing failed ({e}), using legacy fallback")
             parents, leaves = self._legacy_fallback(filepath, filename)
 
-        # 1) PG first
-        parent_store.add(parents)
+        # 1) Milvus first — if crash after this, orphaned leaves are harmless
+        vector_service.add_leaves(leaves, user_id=user_id)
 
-        # 2) ChromaDB second; rollback PG on failure
-        try:
-            vector_service.add_leaves(leaves)
-        except Exception as e:
-            logger.error(f"{filename}: chroma insert failed, rolling back PG parents")
-            parent_store.delete_by_ids([p.id for p in parents])
-            raise
+        # 2) PG second
+        parent_store.add(parents, user_id=user_id)
 
         retrieval_cache.invalidate_all()
         hybrid_retriever.rebuild_bm25()
@@ -168,7 +164,8 @@ class DocumentService:
 
     def save_upload(self, file_content: bytes, filename: str) -> str:
         os.makedirs(settings.upload_dir, exist_ok=True)
-        unique_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+        digest = hashlib.md5(filename.encode()).hexdigest()[:8]
+        unique_name = f"{digest}_{filename}"
         filepath = os.path.join(settings.upload_dir, unique_name)
         with open(filepath, "wb") as f:
             f.write(file_content)
@@ -177,9 +174,9 @@ class DocumentService:
     def get_file_size(self, filepath: str) -> int:
         return os.path.getsize(filepath)
 
-    def delete_file(self, filename: str) -> dict:
-        parent_count = parent_store.delete_by_filename(filename)
-        leaf_count = vector_service.delete_by_filename(filename)
+    def delete_file(self, filename: str, user_id: int | None = None) -> dict:
+        parent_count = parent_store.delete_by_filename(filename, user_id=user_id)
+        leaf_count = vector_service.delete_by_filename(filename, user_id=user_id)
         for f in os.listdir(settings.upload_dir):
             if f.endswith("_" + filename):
                 os.remove(os.path.join(settings.upload_dir, f))

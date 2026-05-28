@@ -30,11 +30,11 @@ class Settings(BaseSettings):
     所有配置项都有默认值，可以在 .env 文件中覆盖
     """
 
-    # ==================== Qwen LLM 配置 ====================
-    qwen_api_key: str  # 阿里云 DashScope API 密钥（必填）
-    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # API 地址
-    qwen_model: str = "qwen-max"  # 使用的 Qwen 模型
-    qwen_max_tokens: int = 8192  # LLM 最大输出 token 数
+    # ==================== Mimo LLM 配置 ====================
+    mimo_api_key: str  # Mimo API 密钥（必填）
+    mimo_base_url: str = "https://api.xiaomimimo.com/v1"  # API 地址
+    mimo_model: str = "mimo-v2.5"  # 使用的 Mimo 模型
+    mimo_max_tokens: int = 8192  # LLM 最大输出 token 数
 
     # ==================== Embedding 配置 ====================
     embedding_model: str = "BAAI/bge-small-zh-v1.5"  # Embedding 模型名称
@@ -42,6 +42,7 @@ class Settings(BaseSettings):
 
     # ==================== Reranker 配置 ====================
     reranker_model: str = "BAAI/bge-reranker-base"  # 重排序模型名称
+    reranker_device: str = "cuda"  # 重排序模型运行设备（cuda/cpu）
 
     # ==================== ChromaDB 配置 ====================
     chroma_persist_dir: str = "data/chroma_db"  # 向量数据库持久化目录

@@ -25,14 +25,7 @@ import json
 import logging
 from typing import List
 
-from pymilvus import (
-    connections,
-    Collection,
-    FieldSchema,
-    CollectionSchema,
-    DataType,
-    utility,
-)
+from pymilvus import MilvusClient, DataType
 from langchain_core.documents import Document
 from backend.config import get_settings
 from backend.models.chunk_types import LeafChunk
@@ -41,48 +34,61 @@ from backend.services.embedding_service import embedding_service
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-_connected = False
-
 COLLECTION_NAME = settings.milvus_collection
 EMBEDDING_DIM = 512
 MAX_STRING_LEN = 512
 
-FIELDS = [
-    FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=64),
-    FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
-    FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-    FieldSchema(name="parent_id", dtype=DataType.VARCHAR, max_length=64),
-    FieldSchema(name="filename", dtype=DataType.VARCHAR, max_length=MAX_STRING_LEN),
-    FieldSchema(name="heading_path_json", dtype=DataType.VARCHAR, max_length=1024),
-    FieldSchema(name="page", dtype=DataType.INT64),
-    FieldSchema(name="chunk_index", dtype=DataType.INT64),
-    FieldSchema(name="preserve", dtype=DataType.BOOL),
-]
+
+USER_ID_FIELD = "user_id"
 
 
-def _ensure_collection() -> Collection:
-    """连接 Milvus 并确保集合存在，返回已加载的 Collection 对象。"""
-    global _connected
+def _ensure_client() -> MilvusClient:
+    """连接 Milvus 并确保集合存在，返回 MilvusClient 实例。"""
     try:
-        if not _connected:
-            connections.connect(
-                alias="default",
-                host=settings.milvus_host,
-                port=settings.milvus_port,
-            )
-            _connected = True
+        client = MilvusClient(
+            uri=f"http://{settings.milvus_host}:{settings.milvus_port}",
+        )
 
-        if utility.has_collection(COLLECTION_NAME):
-            col = Collection(COLLECTION_NAME)
-        else:
-            schema = CollectionSchema(
-                fields=FIELDS,
-                description="KnowRAG knowledge base leaf chunks",
+        if not client.has_collection(COLLECTION_NAME):
+            schema = MilvusClient.create_schema(
+                auto_id=False,
+                enable_dynamic_field=False,
             )
-            col = Collection(COLLECTION_NAME, schema=schema)
+            schema.add_field(field_name="id", datatype=DataType.VARCHAR,
+                             is_primary=True, max_length=64)
+            schema.add_field(field_name="content", datatype=DataType.VARCHAR,
+                             max_length=65535)
+            schema.add_field(field_name="embedding",
+                             datatype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM)
+            schema.add_field(field_name="parent_id", datatype=DataType.VARCHAR,
+                             max_length=64)
+            schema.add_field(field_name="filename", datatype=DataType.VARCHAR,
+                             max_length=MAX_STRING_LEN)
+            schema.add_field(field_name="heading_path_json",
+                             datatype=DataType.VARCHAR, max_length=1024)
+            schema.add_field(field_name="page", datatype=DataType.INT64)
+            schema.add_field(field_name="chunk_index", datatype=DataType.INT64)
+            schema.add_field(field_name="preserve", datatype=DataType.BOOL)
+            schema.add_field(field_name=USER_ID_FIELD, datatype=DataType.INT64)
 
-        col.load()
-        return col
+            index_params = client.prepare_index_params()
+            index_params.add_index(
+                field_name="embedding",
+                metric_type="COSINE",
+                index_type="HNSW",
+                params={"M": 16, "efConstruction": 200},
+            )
+
+            client.create_collection(
+                collection_name=COLLECTION_NAME,
+                schema=schema,
+                index_params=index_params,
+            )
+            logger.info(
+                "Created collection '%s' with HNSW + COSINE index",
+                COLLECTION_NAME,
+            )
+        return client
     except Exception:
         logger.error(
             "Failed to connect to Milvus at %s:%s",
@@ -91,22 +97,22 @@ def _ensure_collection() -> Collection:
         raise
 
 
+_client_instance: MilvusClient | None = None
+
+
+def _get_client() -> MilvusClient:
+    global _client_instance
+    if _client_instance is None:
+        _client_instance = _ensure_client()
+    return _client_instance
+
+
 class VectorService:
-    """基于 Milvus 的向量检索服务。"""
-
-    def __init__(self):
-        self._col: Collection | None = None
-
-    @property
-    def collection(self) -> Collection:
-        """延迟初始化 Milvus 连接。"""
-        if self._col is None:
-            self._col = _ensure_collection()
-        return self._col
+    """基于 MilvusClient 的向量检索服务。"""
 
     # ==================== 数据写入 ====================
 
-    def add_documents(self, docs: List[Document]) -> List[str]:
+    def add_documents(self, docs: List[Document], user_id: int = 0) -> List[str]:
         import uuid
 
         ids = [str(uuid.uuid4()) for _ in docs]
@@ -128,14 +134,15 @@ class VectorService:
                 "page": int(meta.get("page", 0) or 0),
                 "chunk_index": int(meta.get("chunk_index", 0)),
                 "preserve": bool(meta.get("preserve", False)),
+                USER_ID_FIELD: user_id,
             })
 
-        col = self.collection
-        col.insert(rows)
-        col.flush()
+        client = _get_client()
+        client.insert(COLLECTION_NAME, rows)
+        client.flush(COLLECTION_NAME)
         return ids
 
-    def add_leaves(self, leaves: list[LeafChunk]) -> list[str]:
+    def add_leaves(self, leaves: list[LeafChunk], user_id: int = 0) -> list[str]:
         if not leaves:
             return []
 
@@ -157,52 +164,58 @@ class VectorService:
                 "page": leaf.page if leaf.page is not None else 0,
                 "chunk_index": leaf.chunk_index,
                 "preserve": leaf.preserve,
+                USER_ID_FIELD: user_id,
             })
 
-        col = self.collection
-        col.insert(rows)
-        col.flush()
+        client = _get_client()
+        client.insert(COLLECTION_NAME, rows)
+        client.flush(COLLECTION_NAME)
         self._ensure_index()
         return ids
 
     # ==================== 数据检索 ====================
 
-    def similarity_search(self, query: str, k: int = 10) -> List[Document]:
+    def similarity_search(self, query: str, k: int = 10, user_id: int | None = None) -> List[Document]:
         try:
-            col = self.collection
+            client = _get_client()
             query_vec = embedding_service.embed_query(query)
 
-            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-            results = col.search(
+            filter_expr = ""
+            if user_id is not None:
+                filter_expr = f"{USER_ID_FIELD} == {user_id}"
+
+            results = client.search(
+                collection_name=COLLECTION_NAME,
                 data=[query_vec],
                 anns_field="embedding",
-                param=search_params,
+                search_params={"metric_type": "COSINE", "params": {"ef": 100}},
                 limit=k,
+                filter=filter_expr or None,
                 output_fields=[
                     "id", "content", "filename", "parent_id",
                     "heading_path_json", "page", "chunk_index", "preserve",
+                    USER_ID_FIELD,
                 ],
             )
 
             docs = []
             if results and results[0]:
                 for hit in results[0]:
-                    entity = hit.entity
-                    score = max(0.0, min(1.0, hit.score))
+                    score = max(0.0, min(1.0, hit.get("distance", 0)))
                     metadata = {
-                        "parent_id": entity.get("parent_id", ""),
-                        "filename": entity.get("filename", ""),
+                        "parent_id": hit.get("parent_id", ""),
+                        "filename": hit.get("filename", ""),
                         "heading_path": json.loads(
-                            entity.get("heading_path_json", "[]")
+                            hit.get("heading_path_json", "[]")
                         ),
-                        "page": entity.get("page", 0),
-                        "chunk_index": entity.get("chunk_index", 0),
-                        "preserve": entity.get("preserve", False),
-                        "doc_id": entity.get("id", ""),
+                        "page": hit.get("page", 0),
+                        "chunk_index": hit.get("chunk_index", 0),
+                        "preserve": hit.get("preserve", False),
+                        "doc_id": hit.get("id", ""),
                         "score": score,
                     }
                     docs.append(Document(
-                        page_content=entity.get("content", ""),
+                        page_content=hit.get("content", ""),
                         metadata=metadata,
                     ))
             return docs
@@ -211,23 +224,24 @@ class VectorService:
             return []
 
     def query_with_filter(
-        self, query: str, where: dict, n_results: int = 5
+        self, query: str, where: dict, n_results: int = 5, user_id: int | None = None
     ) -> dict:
         try:
-            col = self.collection
+            client = _get_client()
             query_vec = embedding_service.embed_query(query)
-            filter_expr = self._build_filter_expr(where)
+            filter_expr = self._build_filter_expr(where, user_id=user_id)
 
-            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-            results = col.search(
+            results = client.search(
+                collection_name=COLLECTION_NAME,
                 data=[query_vec],
                 anns_field="embedding",
-                param=search_params,
+                search_params={"metric_type": "COSINE", "params": {"ef": 100}},
                 limit=n_results,
-                expr=filter_expr,
+                filter=filter_expr,
                 output_fields=[
                     "id", "content", "filename", "parent_id",
                     "heading_path_json", "page", "chunk_index", "preserve",
+                    USER_ID_FIELD,
                 ],
             )
 
@@ -238,21 +252,21 @@ class VectorService:
 
             if results and results[0]:
                 for hit in results[0]:
-                    entity = hit.entity
-                    ids_list.append(entity.get("id", ""))
-                    docs_list.append(entity.get("content", ""))
+                    ids_list.append(hit.get("id", ""))
+                    docs_list.append(hit.get("content", ""))
                     metas_list.append({
-                        "parent_id": entity.get("parent_id", ""),
-                        "filename": entity.get("filename", ""),
+                        "parent_id": hit.get("parent_id", ""),
+                        "filename": hit.get("filename", ""),
                         "heading_path": json.loads(
-                            entity.get("heading_path_json", "[]")
+                            hit.get("heading_path_json", "[]")
                         ),
-                        "page": entity.get("page", 0),
-                        "chunk_index": entity.get("chunk_index", 0),
-                        "preserve": entity.get("preserve", False),
+                        "page": hit.get("page", 0),
+                        "chunk_index": hit.get("chunk_index", 0),
+                        "preserve": hit.get("preserve", False),
+                        "user_id": hit.get(USER_ID_FIELD, 0),
                     })
                     distances_list.append(
-                        max(0.0, min(1.0, 1.0 - hit.score))
+                        max(0.0, min(1.0, 1.0 - hit.get("distance", 0)))
                     )
 
             return {
@@ -270,13 +284,18 @@ class VectorService:
 
     # ==================== 数据查询 ====================
 
-    def get_by_filename(self, filename: str) -> list[dict]:
-        col = self.collection
-        results = col.query(
-            expr=f'filename == "{self._escape_str(filename)}"',
+    def get_by_filename(self, filename: str, user_id: int | None = None) -> list[dict]:
+        client = _get_client()
+        filt = f'filename == "{self._escape_str(filename)}"'
+        if user_id is not None:
+            filt += f" && {USER_ID_FIELD} == {user_id}"
+        results = client.query(
+            collection_name=COLLECTION_NAME,
+            filter=filt,
             output_fields=[
                 "id", "content", "filename", "parent_id",
                 "heading_path_json", "page", "chunk_index", "preserve",
+                USER_ID_FIELD,
             ],
         )
         return [
@@ -291,6 +310,7 @@ class VectorService:
                     "page": r.get("page", 0),
                     "chunk_index": r.get("chunk_index", 0),
                     "preserve": r.get("preserve", False),
+                    "user_id": r.get(USER_ID_FIELD, 0),
                 },
                 "document": r.get("content", ""),
             }
@@ -298,9 +318,10 @@ class VectorService:
         ]
 
     def get_by_parent_id(self, parent_id: str) -> list[dict]:
-        col = self.collection
-        results = col.query(
-            expr=f'parent_id == "{self._escape_str(parent_id)}"',
+        client = _get_client()
+        results = client.query(
+            collection_name=COLLECTION_NAME,
+            filter=f'parent_id == "{self._escape_str(parent_id)}"',
             output_fields=[
                 "id", "content", "filename", "parent_id",
                 "heading_path_json", "page", "chunk_index", "preserve",
@@ -324,11 +345,13 @@ class VectorService:
             for r in results
         ]
 
-    def get_document_stats(self) -> List[dict]:
-        col = self.collection
+    def get_document_stats(self, user_id: int | None = None) -> List[dict]:
+        client = _get_client()
         try:
-            results = col.query(
-                expr="id != ''",
+            filt = f"{USER_ID_FIELD} == {user_id}" if user_id is not None else "id != ''"
+            results = client.query(
+                collection_name=COLLECTION_NAME,
+                filter=filt,
                 output_fields=["filename"],
             )
         except Exception:
@@ -343,14 +366,17 @@ class VectorService:
             for fn, cnt in stats.items()
         ]
 
-    def get_all_chunks(self) -> List[Document]:
-        col = self.collection
+    def get_all_chunks(self, user_id: int | None = None) -> List[Document]:
+        client = _get_client()
         try:
-            results = col.query(
-                expr="id != ''",
+            filt = f"{USER_ID_FIELD} == {user_id}" if user_id is not None else "id != ''"
+            results = client.query(
+                collection_name=COLLECTION_NAME,
+                filter=filt,
                 output_fields=[
                     "id", "content", "filename", "parent_id",
                     "heading_path_json", "page", "chunk_index", "preserve",
+                    USER_ID_FIELD,
                 ],
             )
         except Exception:
@@ -367,29 +393,36 @@ class VectorService:
                     "page": r.get("page", 0),
                     "chunk_index": r.get("chunk_index", 0),
                     "preserve": r.get("preserve", False),
+                    "user_id": r.get(USER_ID_FIELD, 0),
                 },
             ))
         return docs
 
     def count(self) -> int:
-        col = self.collection
+        client = _get_client()
         try:
-            return col.num_entities
+            stats = client.get_collection_stats(COLLECTION_NAME)
+            return int(stats.get("row_count", 0))
         except Exception:
             return 0
 
     # ==================== 数据删除 ====================
 
-    def delete_by_filename(self, filename: str) -> int:
-        existing = self.get_by_filename(filename)
+    def delete_by_filename(self, filename: str, user_id: int | None = None) -> int:
+        existing = self.get_by_filename(filename, user_id=user_id)
         count = len(existing)
         if count == 0:
             return 0
 
-        col = self.collection
-        expr = f'filename == "{self._escape_str(filename)}"'
-        col.delete(expr)
-        col.flush()
+        client = _get_client()
+        filt = f'filename == "{self._escape_str(filename)}"'
+        if user_id is not None:
+            filt += f" && {USER_ID_FIELD} == {user_id}"
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            filter=filt,
+        )
+        client.flush(COLLECTION_NAME)
         return count
 
     # ==================== 内部方法 ====================
@@ -398,8 +431,10 @@ class VectorService:
     def _escape_str(s: str) -> str:
         return s.replace("\\", "\\\\").replace('"', '\\"')
 
-    def _build_filter_expr(self, where: dict) -> str:
+    def _build_filter_expr(self, where: dict, user_id: int | None = None) -> str:
         parts = []
+        if user_id is not None:
+            parts.append(f"{USER_ID_FIELD} == {user_id}")
         for key, value in where.items():
             if isinstance(value, str):
                 parts.append(f'{key} == "{self._escape_str(value)}"')
@@ -410,25 +445,27 @@ class VectorService:
         return " && ".join(parts) if parts else "id != ''"
 
     def _ensure_index(self):
-        col = self.collection
-        if not col.has_index():
-            index_params = {
-                "metric_type": "COSINE",
-                "index_type": "IVF_FLAT",
-                "params": {"nlist": 128},
-            }
-            col.create_index("embedding", index_params)
-            logger.info(
-                f"Created IVF_FLAT index with COSINE metric on '{COLLECTION_NAME}'"
-            )
+        client = _get_client()
+        if client.list_indexes(COLLECTION_NAME, field_name="embedding"):
+            return
+        index_params = client.prepare_index_params()
+        index_params.add_index(
+            field_name="embedding",
+            metric_type="COSINE",
+            index_type="HNSW",
+            params={"M": 16, "efConstruction": 200},
+        )
+        client.create_index(COLLECTION_NAME, index_params)
 
     def create_indexes(self):
-        col = self.collection
+        client = _get_client()
         for field_name in ("filename", "parent_id"):
             try:
-                col.create_index(
-                    field_name=field_name,
-                    index_name=f"idx_{field_name}",
+                index_params = client.prepare_index_params()
+                index_params.add_index(field_name=field_name)
+                client.create_index(
+                    collection_name=COLLECTION_NAME,
+                    index_params=index_params,
                 )
             except Exception:
                 logger.warning(

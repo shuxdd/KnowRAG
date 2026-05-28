@@ -16,12 +16,21 @@ FastAPI 应用的主模块，负责：
 """
 
 import os
+import warnings
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+# Suppress noisy deprecation warnings from third-party libraries
+from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
+
+warnings.filterwarnings("ignore", category=LangChainPendingDeprecationWarning)
+warnings.filterwarnings("ignore", message=".*ORM-style PyMilvus.*")
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import documents, qa, eval, auth_router
 from backend.utils.auth import get_current_user
+from backend.services.reranker import reranker  # noqa: F401 — eager-load at import time
 
 app = FastAPI(
     title="KnowRAG - Enterprise Knowledge Base",

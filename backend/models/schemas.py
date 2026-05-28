@@ -211,8 +211,7 @@ class EvalRunInfo(BaseModel):
     avg_faithfulness: Optional[float] = None
     avg_context_recall: Optional[float] = None
     avg_context_precision: Optional[float] = None
-    avg_answer_correctness: Optional[float] = None
-    avg_answer_accuracy: Optional[float] = None
+    avg_answer_relevancy: Optional[float] = None
 
 
 class EvalResultItem(BaseModel):
@@ -229,8 +228,7 @@ class EvalResultItem(BaseModel):
     faithfulness: Optional[float] = None
     context_recall: Optional[float] = None
     context_precision: Optional[float] = None
-    answer_correctness: Optional[float] = None
-    answer_accuracy: Optional[float] = None
+    answer_relevancy: Optional[float] = None
 
 
 class EvalRunDetail(BaseModel):
@@ -245,8 +243,7 @@ class EvalRunDetail(BaseModel):
     avg_faithfulness: Optional[float] = None
     avg_context_recall: Optional[float] = None
     avg_context_precision: Optional[float] = None
-    avg_answer_correctness: Optional[float] = None
-    avg_answer_accuracy: Optional[float] = None
+    avg_answer_relevancy: Optional[float] = None
     results: list[EvalResultItem]
 
 

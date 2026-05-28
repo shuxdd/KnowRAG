@@ -91,42 +91,61 @@ class PdfParser(BaseParser):
     def _parse_pymupdf(self, filepath: str) -> list[StructuredElement]:
         """PyMuPDF fallback parsing with font-based heading detection and table extraction."""
         doc = fitz.open(filepath)
-        page_count = doc.page_count
-        if page_count == 0:
+        if doc.page_count == 0:
             doc.close()
             return []
 
         pdf_meta = doc.metadata or {}
         created_raw = pdf_meta.get("creationDate") or pdf_meta.get("modDate")
         created_at = _parse_pdf_date(created_raw) if created_raw else None
-        doc.close()
-
-        doc = fitz.open(filepath)
-        sizes: list[float] = []
-        pages_text: list[list[tuple[fitz.Rect, str, float, bool]]] = []
         elem_meta = {"created_at": created_at} if created_at else {}
 
+        page_width = doc[0].rect.width if doc.page_count > 0 else 595
+        page_height = doc[0].rect.height if doc.page_count > 0 else 842
+        margin = page_width * 0.02
+        header_zone = page_height * 0.06    # top 6% — likely header / page number
+        footer_zone = page_height * 0.92    # bottom 8 % — likely footer / annotation
+
+        sizes: list[float] = []
+        page_lines: list[list[tuple[fitz.Rect, str, float, bool]]] = []
+
+        # --- First pass: collect font sizes & group spans into lines ---
         for page_num in range(doc.page_count):
             page = doc[page_num]
             blocks = page.get_text("dict")["blocks"]
-            blocks_on_page: list[tuple[fitz.Rect, str, float, bool]] = []
+            lines_on_page: list[tuple[fitz.Rect, str, float, bool]] = []
             for block in blocks:
                 if block["type"] != 0:
                     continue
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
+                for line_data in block.get("lines", []):
+                    line_spans: list[tuple[fitz.Rect, str, float, bool]] = []
+                    for span in line_data.get("spans", []):
                         sizes.append(span["size"])
                         text = span["text"].strip()
-                        if text:
-                            blocks_on_page.append(
-                                (
-                                    fitz.Rect(span["bbox"]),
-                                    text,
-                                    span["size"],
-                                    bool(span["flags"] & 2),
-                                )
-                            )
-            pages_text.append(blocks_on_page)
+                        if not text:
+                            continue
+                        bbox = span["bbox"]
+                        # Skip header / footer / annotation regions
+                        if bbox[1] < header_zone or bbox[1] > footer_zone:
+                            continue
+                        line_spans.append(
+                            (fitz.Rect(bbox), text, span["size"],
+                             bool(span["flags"] & 2))
+                        )
+                    if line_spans:
+                        merged_text = "".join(s[1] for s in line_spans)
+                        merged_bbox = fitz.Rect(
+                            min(s[0].x0 for s in line_spans),
+                            min(s[0].y0 for s in line_spans),
+                            max(s[0].x1 for s in line_spans),
+                            max(s[0].y1 for s in line_spans),
+                        )
+                        max_size = max(s[2] for s in line_spans)
+                        any_bold = any(s[3] for s in line_spans)
+                        lines_on_page.append(
+                            (merged_bbox, merged_text, max_size, any_bold)
+                        )
+            page_lines.append(lines_on_page)
 
         if not sizes:
             doc.close()
@@ -136,9 +155,6 @@ class PdfParser(BaseParser):
         h1_threshold = base_size * settings.pdf_h1_ratio
         h2_low = base_size * settings.pdf_h2_ratio
         h3_low = base_size * settings.pdf_h3_ratio
-
-        page_width = doc[0].rect.width if doc.page_count > 0 else 595
-        margin = page_width * 0.02
 
         def is_heading(bbox: fitz.Rect, size: float, bold: bool) -> int | None:
             if bbox.x0 < margin or bbox.x1 > page_width - margin:
@@ -151,9 +167,22 @@ class PdfParser(BaseParser):
                 return 3
             return None
 
+        # --- Watermark / repeated-text detection ---
+        # Text that appears on >= 80% of pages and is short is likely a
+        # header, footer, watermark, or annotation artifact.
+        text_page_count: dict[str, set[int]] = {}
+        for page_num, lines in enumerate(page_lines):
+            for _, text, _, _ in lines:
+                text_page_count.setdefault(text, set()).add(page_num)
+        watermark_texts = {
+            text for text, pages in text_page_count.items()
+            if len(pages) >= doc.page_count * 0.8 and len(text) < 60
+        }
+
         result: list[StructuredElement] = []
 
-        for page_num, spans in enumerate(pages_text):
+        # --- Second pass: build structured elements ---
+        for page_num, lines in enumerate(page_lines):
             page = doc[page_num]
             tables = page.find_tables()
             table_regions = []
@@ -171,7 +200,12 @@ class PdfParser(BaseParser):
                     )
                 )
 
-            for bbox, text, size, bold in spans:
+            for bbox, text, size, bold in lines:
+                # Skip watermark / repeated annotation text
+                if text in watermark_texts:
+                    continue
+
+                # Skip text inside table regions (already extracted)
                 if table_regions:
                     in_table = False
                     for tbl_bbox in table_regions:
@@ -194,8 +228,8 @@ class PdfParser(BaseParser):
                     if len(text) > 100:
                         result.append(
                             StructuredElement(
-                                content=text, element_type="paragraph", page=page_num,
-                                metadata=elem_meta,
+                                content=text, element_type="paragraph",
+                                page=page_num, metadata=elem_meta,
                             )
                         )
                     else:
@@ -211,8 +245,8 @@ class PdfParser(BaseParser):
                 else:
                     result.append(
                         StructuredElement(
-                            content=text, element_type="paragraph", page=page_num,
-                            metadata=elem_meta,
+                            content=text, element_type="paragraph",
+                            page=page_num, metadata=elem_meta,
                         )
                     )
 

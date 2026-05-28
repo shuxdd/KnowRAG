@@ -25,7 +25,7 @@ import os
 import logging
 from datetime import datetime
 from typing import List
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from backend.models.schemas import (
     UploadResponse,
     DocumentListResponse,
@@ -38,6 +38,7 @@ from backend.config import get_settings
 from backend.services.document_service import document_service
 from backend.services.vector_service import vector_service
 from backend.utils.file_utils import validate_file, validate_file_size
+from backend.utils.auth import get_current_user, CurrentUser
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,10 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     文档上传接口
 
@@ -67,12 +71,12 @@ async def upload_document(file: UploadFile = File(...)):
 
     try:
         filepath = document_service.save_upload(content, file.filename)
-        doc_id = document_service.process_file(filepath, file.filename)
+        doc_id = document_service.process_file(filepath, file.filename, user_id=current_user.id)
     except Exception as e:
         logger.error(f"Document processing failed for '{file.filename}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
 
-    chunks_count = len(vector_service.get_by_filename(file.filename))
+    chunks_count = len(vector_service.get_by_filename(file.filename, user_id=current_user.id))
 
     return UploadResponse(
         doc_id=doc_id,
@@ -82,7 +86,10 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @router.post("/upload/batch")
-async def upload_documents(files: List[UploadFile] = File(...)):
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """批量文档上传接口"""
     results = []
     for file in files:
@@ -90,9 +97,9 @@ async def upload_documents(files: List[UploadFile] = File(...)):
             validate_file(file)
             content = await file.read()
             filepath = document_service.save_upload(content, file.filename)
-            doc_id = document_service.process_file(filepath, file.filename)
+            doc_id = document_service.process_file(filepath, file.filename, user_id=current_user.id)
 
-            chunks_count = len(vector_service.get_by_filename(file.filename))
+            chunks_count = len(vector_service.get_by_filename(file.filename, user_id=current_user.id))
             results.append({
                 "doc_id": doc_id,
                 "filename": file.filename,
@@ -109,7 +116,9 @@ async def upload_documents(files: List[UploadFile] = File(...)):
 
 
 @router.get("", response_model=DocumentListResponse)
-async def list_documents():
+async def list_documents(
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     获取已上传文档列表接口
 
@@ -122,7 +131,7 @@ async def list_documents():
         - uploaded_at: 上传时间
     """
     try:
-        stats = vector_service.get_document_stats()
+        stats = vector_service.get_document_stats(user_id=current_user.id)
         upload_dir = get_settings().upload_dir
 
         # Build filename -> filesize lookup in one pass
@@ -153,8 +162,10 @@ async def list_documents():
 
 
 @router.delete("")
-async def delete_all_documents():
-    stats = vector_service.get_document_stats()
+async def delete_all_documents(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    stats = vector_service.get_document_stats(user_id=current_user.id)
     if not stats:
         return {"detail": "No documents to delete"}
     total_parents = 0
@@ -162,7 +173,7 @@ async def delete_all_documents():
     deleted_files = 0
     for s in stats:
         filename = s["filename"]
-        result = document_service.delete_file(filename)
+        result = document_service.delete_file(filename, user_id=current_user.id)
         total_parents += result["parents"]
         total_leaves += result["leaves"]
         if result["parents"] > 0 or result["leaves"] > 0:
@@ -171,18 +182,24 @@ async def delete_all_documents():
 
 
 @router.delete("/{doc_id:path}")
-async def delete_document(doc_id: str):
-    result = document_service.delete_file(doc_id)
+async def delete_document(
+    doc_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    result = document_service.delete_file(doc_id, user_id=current_user.id)
     if result["leaves"] == 0 and result["parents"] == 0:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"detail": f"Deleted {result['leaves']} leaf chunks and {result['parents']} parent chunks"}
 
 
 @router.get("/{doc_id:path}/chunks", response_model=ChunkPreviewResponse)
-async def get_document_chunks(doc_id: str):
+async def get_document_chunks(
+    doc_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     from backend.services.parent_store import parent_store
 
-    parents = parent_store.get_by_filename(doc_id)
+    parents = parent_store.get_by_filename(doc_id, user_id=current_user.id)
     if not parents:
         raise HTTPException(status_code=404, detail="Document not found")
 

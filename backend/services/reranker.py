@@ -14,11 +14,16 @@
 """
 
 import os
+import logging
 from typing import List
 from langchain_core.documents import Document
-from backend.config import get_settings
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+logger = logging.getLogger(__name__)
+
+from backend.config import get_settings
+
 settings = get_settings()
 
 
@@ -27,30 +32,30 @@ class Reranker:
     重排序服务
 
     使用交叉编码器对候选文档进行精细排序。
-    模型懒加载，首次使用时才从 HuggingFace 加载。
+    模型懒加载，首次调用 rerank() 时才加载。
     """
 
     def __init__(self):
-        """
-        初始化重排序器
-        _model 属性在首次使用时懒加载
-        """
         self._model = None
 
-    @property
-    def model(self):
-        """
-        懒加载重排序模型
-        首次访问时从 HuggingFace 加载 BGE Reranker 模型
-
-        Returns:
-            CrossEncoder 模型实例
-        """
-        if self._model is None:
-            os.environ["HF_ENDPOINT"] = settings.hf_endpoint
-            from sentence_transformers import CrossEncoder
-            self._model = CrossEncoder(settings.reranker_model)
-        return self._model
+    def _ensure_model(self):
+        if self._model is not None:
+            return
+        import torch
+        device_str = settings.reranker_device if torch.cuda.is_available() else "cpu"
+        logger.info(f"Loading reranker model: {settings.reranker_model} on {device_str}")
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        self._device = torch.device(device_str)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            settings.reranker_model, local_files_only=True
+        )
+        dtype = torch.float16 if device_str == "cuda" else torch.float32
+        self._model = AutoModelForSequenceClassification.from_pretrained(
+            settings.reranker_model, local_files_only=True,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+        ).to(self._device)
+        self._model.eval()
 
     def rerank(
         self, query: str, docs: List[Document], top_n: int = 3
@@ -68,20 +73,28 @@ class Reranker:
         """
         if not docs:
             return []
-        # 构建查询-文档对列表
+        self._ensure_model()
+        import torch
+        # 构建查询-文档对并批量编码
         pairs = [[query, doc.page_content] for doc in docs]
-        # 使用交叉编码器预测相关性分数
-        scores = self.model.predict(pairs)
+        inputs = self._tokenizer(
+            pairs, padding=True, truncation=True, return_tensors="pt", max_length=512
+        ).to(self._device)
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+        scores = outputs.logits.squeeze(-1).tolist()
+        if not isinstance(scores, list):
+            scores = [scores]
         # 将文档与分数配对并按分数降序排列
         scored = list(zip(docs, scores))
         scored.sort(key=lambda x: x[1], reverse=True)
         # 取前 top_n 个文档
         top_docs = []
         for doc, score in scored[:top_n]:
-            doc.metadata["score"] = float(score)  # 将分数存入元数据
+            doc.metadata["score"] = float(score)
             top_docs.append(doc)
         return top_docs
 
 
-# 全局单例实例
+# 全局单例（模型尚未加载，首次 rerank() 时才加载）
 reranker = Reranker()

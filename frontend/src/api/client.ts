@@ -218,6 +218,8 @@ export async function askQuestionStream(
   onSources: (sources: Source[], route?: string) => void,
   onDone: (newSessionId: string) => void,
   onError: (error: Error) => void,
+  onThinking?: (step: string, text: string) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
     const response = await fetch('/api/qa/ask/stream', {
@@ -234,6 +236,7 @@ export async function askQuestionStream(
         top_k: topK,
         session_id: sessionId,
       }),
+      signal,
     })
 
     const newSessionId = response.headers.get('X-Session-Id')
@@ -260,6 +263,9 @@ export async function askQuestionStream(
             } else if (event.type === 'sources') {
               const route = (event as any).route as string | undefined
               onSources(event.data as Source[], route)
+            } else if (event.type === 'thinking') {
+              const d = event.data as { step: string; text: string }
+              onThinking?.(d.step, d.text)
             } else if (event.type === 'done') {
               if (newSessionId) onDone(newSessionId)
             }
@@ -286,6 +292,7 @@ export async function askAgentStream(
   onStep?: (subQ: number, text: string, status: string) => void,
   onReflect?: (msg: string) => void,
   onThinking?: (subQ: number, token: string) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
     const response = await fetch('/api/qa/agent', {
@@ -300,6 +307,7 @@ export async function askAgentStream(
         question,
         session_id: sessionId,
       }),
+      signal,
     })
 
     const newSessionId = response.headers.get('X-Session-Id')
@@ -384,8 +392,7 @@ export interface EvalRunInfo {
   avg_faithfulness: number | null
   avg_context_recall: number | null
   avg_context_precision: number | null
-  avg_answer_correctness: number | null
-  avg_answer_accuracy: number | null
+  avg_answer_relevancy: number | null
 }
 
 export interface EvalResultItem {
@@ -396,8 +403,7 @@ export interface EvalResultItem {
   faithfulness: number | null
   context_recall: number | null
   context_precision: number | null
-  answer_correctness: number | null
-  answer_accuracy: number | null
+  answer_relevancy: number | null
 }
 
 export interface EvalRunDetail extends EvalRunInfo {

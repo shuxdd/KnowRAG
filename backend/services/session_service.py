@@ -2,7 +2,7 @@
 会话服务模块
 
 管理对话会话（Session）和消息（Message）的持久化存储。
-使用 SQLite 数据库存储，支持多轮对话。
+使用 PostgreSQL 数据库存储，支持多轮对话。
 
 主要功能：
 - 创建会话：create_session()
@@ -13,188 +13,113 @@
 - 记忆压缩：get_summary(), update_summary()
 
 数据结构：
-- sessions 表：存储会话元信息（ID、标题、创建时间、更新时间）
+- sessions 表：存储会话元信息（ID、标题、摘要、创建时间、更新时间）
 - messages 表：存储对话消息（角色、内容、来源、创建时间）
 """
 
-import sqlite3
 import uuid
-import json
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
+
+from sqlalchemy import func, desc
 from langchain_core.chat_history import InMemoryChatMessageHistory, BaseChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
 
-DB_PATH = "data/sessions.db"
+from backend.db import SessionFactory
+from backend.models.db_models import SessionORM, MessageORM
+
+logger = logging.getLogger(__name__)
 
 
 class SessionService:
-    """
-    会话管理服务
+    """会话管理服务，负责会话和消息的持久化存储，使用 PostgreSQL 数据库。"""
 
-    负责会话和消息的持久化存储，使用 SQLite 数据库。
-    """
-
-    def __init__(self):
-        """
-        初始化会话服务
-        创建数据库连接和表结构
-        """
-        self._init_db()
-
-    def _get_conn(self):
-        """
-        获取数据库连接
-
-        Returns:
-            sqlite3.Connection 对象
-        """
-        return sqlite3.connect(DB_PATH)
-
-    def _init_db(self):
-        """
-        初始化数据库表结构
-        创建 sessions 表（存储会话元信息）和 messages 表（存储对话消息）
-        """
-        with self._get_conn() as conn:
-            # 会话表：存储会话的基本信息
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,        -- 会话 ID
-                    title TEXT DEFAULT '新对话', -- 会话标题
-                    summary TEXT DEFAULT '',     -- 滚动对话摘要
-                    created_at TEXT NOT NULL,    -- 创建时间
-                    updated_at TEXT NOT NULL     -- 最后更新时间
-                )
-            """)
-            existing = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
-            if "summary" not in existing:
-                conn.execute("ALTER TABLE sessions ADD COLUMN summary TEXT DEFAULT ''")
-            # 消息表：存储会话中的每条消息
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- 消息 ID
-                    session_id TEXT NOT NULL,              -- 所属会话 ID
-                    role TEXT NOT NULL,                   -- 角色（user/assistant）
-                    content TEXT NOT NULL,                -- 消息内容
-                    sources TEXT,                          -- 消息关联的来源信息（JSON）
-                    created_at TEXT NOT NULL,              -- 创建时间
-                    FOREIGN KEY (session_id) REFERENCES sessions(id)
-                )
-            """)
-            conn.commit()
-
-    def create_session(self, title: str = "新对话") -> str:
-        """
-        创建新会话
-
-        Args:
-            title: 会话标题，默认为"新对话"
-
-        Returns:
-            新创建的会话 ID
-        """
-        session_id = uuid.uuid4().hex[:16]  # 生成16位十六进制会话 ID
-        now = datetime.now().isoformat()
-        with self._get_conn() as conn:
-            conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (session_id, title, now, now),
-            )
-            conn.commit()
+    def create_session(self, title: str = "新对话", user_id: int = 0) -> str:
+        session_id = uuid.uuid4().hex[:16]
+        now = datetime.now(timezone.utc)
+        with SessionFactory() as db:
+            db.add(SessionORM(
+                id=session_id,
+                title=title,
+                user_id=user_id,
+                created_at=now,
+                updated_at=now,
+            ))
+            db.commit()
         return session_id
 
     def get_session(self, session_id: str) -> dict | None:
-        """
-        获取指定会话的信息
-
-        Args:
-            session_id: 会话 ID
-
-        Returns:
-            会话信息字典，如果不存在则返回 None
-        """
-        with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
+        with SessionFactory() as db:
+            row = db.query(SessionORM).filter(SessionORM.id == session_id).first()
         if not row:
             return None
-        return {"id": row[0], "title": row[1], "created_at": row[2], "updated_at": row[3]}
+        return {
+            "id": row.id,
+            "title": row.title,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
 
-    def list_sessions(self) -> list[dict]:
-        """
-        获取所有会话列表
-
-        Returns:
-            会话列表，按最后更新时间降序排列
-        """
-        with self._get_conn() as conn:
-            rows = conn.execute(
-                """SELECT s.id, s.title, s.created_at, s.updated_at, COUNT(m.id) as msg_count
-                   FROM sessions s LEFT JOIN messages m ON s.id = m.session_id
-                   GROUP BY s.id ORDER BY s.updated_at DESC"""
-            ).fetchall()
+    def list_sessions(self, user_id: int | None = None) -> list[dict]:
+        with SessionFactory() as db:
+            query = db.query(
+                SessionORM.id,
+                SessionORM.title,
+                SessionORM.created_at,
+                SessionORM.updated_at,
+                func.count(MessageORM.id).label("msg_count"),
+            ).outerjoin(MessageORM, SessionORM.id == MessageORM.session_id)
+            if user_id is not None:
+                query = query.filter(SessionORM.user_id == user_id)
+            rows = query.group_by(SessionORM.id).order_by(desc(SessionORM.updated_at)).all()
         return [
-            {"id": r[0], "title": r[1], "created_at": r[2], "updated_at": r[3], "message_count": r[4]}
+            {
+                "id": r.id,
+                "title": r.title,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "message_count": r.msg_count,
+            }
             for r in rows
         ]
 
-    def delete_session(self, session_id: str) -> bool:
-        """
-        删除指定会话及其所有消息
-
-        Args:
-            session_id: 会话 ID
-
-        Returns:
-            是否成功删除（会话存在返回 True）
-        """
-        with self._get_conn() as conn:
-            # 先删除该会话的所有消息
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            # 再删除会话本身
-            cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+    def delete_session(self, session_id: str, user_id: int | None = None) -> bool:
+        with SessionFactory() as db:
+            query = db.query(SessionORM).filter(SessionORM.id == session_id)
+            if user_id is not None:
+                query = query.filter(SessionORM.user_id == user_id)
+            session = query.first()
+            if not session:
+                return False
+            db.query(MessageORM).filter(MessageORM.session_id == session_id).delete()
+            db.delete(session)
+            db.commit()
+            return True
 
     def add_message(self, session_id: str, role: str, content: str, sources: list | None = None):
-        """
-        向指定会话添加消息
-
-        Args:
-            session_id: 会话 ID
-            role: 消息角色（user/assistant）
-            content: 消息内容
-            sources: 关联的来源信息列表
-        """
-        now = datetime.now().isoformat()
-        sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
-        with self._get_conn() as conn:
-            conn.execute(
-                "INSERT INTO messages (session_id, role, content, sources, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, sources_json, now),
+        now = datetime.now(timezone.utc)
+        with SessionFactory() as db:
+            db.add(MessageORM(
+                session_id=session_id,
+                role=role,
+                content=content,
+                sources=sources,
+                created_at=now,
+            ))
+            db.query(SessionORM).filter(SessionORM.id == session_id).update(
+                {"updated_at": now}
             )
-            # 更新会话的最后更新时间
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
-            conn.commit()
+            db.commit()
 
     def get_history(self, session_id: str) -> BaseChatMessageHistory:
-        """
-        获取指定会话的对话历史（用于 LLM 上下文）
-
-        Args:
-            session_id: 会话 ID
-
-        Returns:
-            LangChain 格式的聊天历史对象
-        """
         history = InMemoryChatMessageHistory()
-        with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC",
-                (session_id,),
-            ).fetchall()
+        with SessionFactory() as db:
+            rows = (
+                db.query(MessageORM.role, MessageORM.content)
+                .filter(MessageORM.session_id == session_id)
+                .order_by(MessageORM.id.asc())
+                .all()
+            )
         for role, content in rows:
             if role == "user":
                 history.add_message(HumanMessage(content=content))
@@ -203,50 +128,41 @@ class SessionService:
         return history
 
     def get_messages(self, session_id: str) -> list[dict]:
-        """
-        获取指定会话的所有消息（用于 API 返回）
-
-        Args:
-            session_id: 会话 ID
-
-        Returns:
-            消息列表，每条消息包含 role、content、sources 和 created_at
-        """
-        with self._get_conn() as conn:
-            rows = conn.execute(
-                "SELECT role, content, sources, created_at FROM messages WHERE session_id = ? ORDER BY id ASC",
-                (session_id,),
-            ).fetchall()
-        result = []
-        for role, content, sources_json, created_at in rows:
-            sources = json.loads(sources_json) if sources_json else None
-            result.append({
-                "role": role,
-                "content": content,
-                "sources": sources,
-                "created_at": created_at,
-            })
-        return result
+        with SessionFactory() as db:
+            rows = (
+                db.query(MessageORM)
+                .filter(MessageORM.session_id == session_id)
+                .order_by(MessageORM.id.asc())
+                .all()
+            )
+        return [
+            {
+                "role": r.role,
+                "content": r.content,
+                "sources": r.sources,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
 
     def update_title(self, session_id: str, title: str):
-        with self._get_conn() as conn:
-            conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, session_id))
-            conn.commit()
+        with SessionFactory() as db:
+            db.query(SessionORM).filter(SessionORM.id == session_id).update(
+                {"title": title}
+            )
+            db.commit()
 
     def get_summary(self, session_id: str) -> str:
-        with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT summary FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
+        with SessionFactory() as db:
+            row = db.query(SessionORM.summary).filter(SessionORM.id == session_id).first()
         return (row[0] or "") if row else ""
 
     def update_summary(self, session_id: str, summary: str):
-        with self._get_conn() as conn:
-            conn.execute(
-                "UPDATE sessions SET summary = ? WHERE id = ?", (summary, session_id)
+        with SessionFactory() as db:
+            db.query(SessionORM).filter(SessionORM.id == session_id).update(
+                {"summary": summary}
             )
-            conn.commit()
+            db.commit()
 
 
-# 全局单例实例
 session_service = SessionService()

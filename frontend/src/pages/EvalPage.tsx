@@ -80,8 +80,7 @@ const METRICS = [
   { key: 'avg_faithfulness', label: 'Faithfulness' },
   { key: 'avg_context_recall', label: 'Ctx Recall' },
   { key: 'avg_context_precision', label: 'Ctx Precision' },
-  { key: 'avg_answer_correctness', label: 'Correctness' },
-  { key: 'avg_answer_accuracy', label: 'Accuracy' },
+  { key: 'avg_answer_relevancy', label: 'Relevancy' },
 ]
 const M_KEYS = METRICS.map(m => m.key)
 

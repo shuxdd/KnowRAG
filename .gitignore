@@ -1,5 +1,22 @@
-# Data directory
+# Data directory (ignore all by default)
 data/
+
+# ChromaDB vector database
+data/chroma_db/
+
+# Uploaded files
+data/uploads/
+
+# SQLite databases
+*.db
+data/*.db
+
+# Test data (may contain private Q&A pairs)
+data/test_qa_pairs.json
+
+# Logs
+*.log
+logs/
 
 # Virtual environment
 .venv/
