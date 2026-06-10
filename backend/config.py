@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     mimo_max_tokens: int = 8192  # LLM 最大输出 token 数
 
     # ==================== Embedding 配置 ====================
-    embedding_model: str = "BAAI/bge-small-zh-v1.5"  # Embedding 模型名称
+    embedding_model: str = "BAAI/bge-large-zh-v1.5"  # Embedding 模型名称
     embedding_device: str = "cpu"  # Embedding 模型运行设备
 
     # ==================== Reranker 配置 ====================
@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     milvus_host: str = "localhost"
     milvus_port: int = 19530
     milvus_collection: str = "knowledge_base"
+    milvus_search_ef: int = 100
 
     # ==================== 文档分块配置 ====================
     chunk_size: int = 500      # 分块大小（字符数）
@@ -76,11 +77,20 @@ class Settings(BaseSettings):
     parent_max_chars: int = 1500
     leaf_chunk_size: int = 300
     leaf_chunk_overlap: int = 30
+    max_leaf_chars: int = 600  # default = leaf_chunk_size * 2
 
-    # === PDF heuristic thresholds ===
-    pdf_h1_ratio: float = 1.4
-    pdf_h2_ratio: float = 1.2
-    pdf_h3_ratio: float = 1.05
+    # === PDF heading quantile thresholds ===
+    pdf_heading_quantile_h1: float = 0.90
+    pdf_heading_quantile_h2: float = 0.75
+    pdf_heading_quantile_h3: float = 0.60
+
+    # === Per-type chunking overrides (None = use global defaults) ===
+    pdf_parent_max_chars: int | None = None
+    pdf_leaf_chunk_size: int | None = None
+    pdf_leaf_chunk_overlap: int | None = None
+    md_parent_max_chars: int | None = None
+    md_leaf_chunk_size: int | None = None
+    md_leaf_chunk_overlap: int | None = None
 
     # ==================== 文件上传配置 ====================
     upload_dir: str = "data/uploads"  # 上传文件存储目录
