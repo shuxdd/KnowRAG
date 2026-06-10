@@ -158,6 +158,28 @@ class MarkdownParser(BaseParser):
                 i = j
                 continue
 
+            # List detection: consecutive lines starting with list markers
+            if re.match(r"^(\s*[-*+]|\s*\d+\.)\s", line):
+                flush_buffer()
+                list_lines = []
+                j = i
+                while j < len(lines) and (
+                    re.match(r"^(\s*[-*+]|\s*\d+\.)\s", lines[j])
+                    or (lines[j].startswith("  ") and list_lines)  # continuation of indented content
+                ):
+                    if lines[j].strip():
+                        list_lines.append(lines[j])
+                    j += 1
+                if list_lines:
+                    result.append(
+                        StructuredElement(
+                            content="\n".join(list_lines),
+                            element_type="list",
+                        )
+                    )
+                    i = j
+                    continue
+
             # Empty line marks a paragraph boundary
             if line.strip() == "":
                 flush_buffer()

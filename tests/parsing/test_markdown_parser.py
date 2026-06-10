@@ -42,3 +42,40 @@ def test_no_heading():
     parser = MarkdownParser()
     elements = parser.parse_string("Just a paragraph.\n\nAnother one.")
     assert len(elements) > 0
+
+
+def test_unordered_list_detected():
+    parser = MarkdownParser()
+    md = "# Title\n\n- Item one\n- Item two\n- Item three"
+    elements = parser.parse_string(md)
+    lists = [e for e in elements if e.element_type == "list"]
+    assert len(lists) == 1
+    assert "Item one" in lists[0].content
+    assert "Item two" in lists[0].content
+
+
+def test_ordered_list_detected():
+    parser = MarkdownParser()
+    md = "# Title\n\n1. First\n2. Second\n3. Third"
+    elements = parser.parse_string(md)
+    lists = [e for e in elements if e.element_type == "list"]
+    assert len(lists) == 1
+    assert "First" in lists[0].content
+
+
+def test_mixed_list_styles():
+    parser = MarkdownParser()
+    md = "# Title\n\n- Unordered item\n\n1. Ordered item"
+    elements = parser.parse_string(md)
+    lists = [e for e in elements if e.element_type == "list"]
+    assert len(lists) == 2
+
+
+def test_list_indentation_preserved():
+    parser = MarkdownParser()
+    md = "# Title\n\n- Top level\n  - Nested level\n    - Deep nested"
+    elements = parser.parse_string(md)
+    lists = [e for e in elements if e.element_type == "list"]
+    assert len(lists) == 1
+    assert "  - Nested level" in lists[0].content
+    assert "    - Deep nested" in lists[0].content
