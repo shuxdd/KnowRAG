@@ -4,6 +4,7 @@ import {
   uploadDocuments,
   deleteDocument,
   deleteAllDocuments,
+  extractDocument,
   getDocumentChunks,
   DocumentInfo,
   ChunkPreviewResponse,
@@ -341,6 +342,22 @@ export default function DocumentsPage() {
                     onClick={() => handlePreview(doc.doc_id)}
                   >
                     预览分块
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await extractDocument(doc.doc_id)
+                        alert(res.detail)
+                      } catch (e: any) {
+                        alert('抽取失败: ' + (e.response?.data?.detail || e.message))
+                      }
+                    }}
+                    style={{
+                      background: '#52c41a', color: '#fff', border: 'none',
+                      padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 12, marginRight: 8,
+                    }}
+                  >
+                    加入图谱
                   </button>
                   <button
                     style={deleteBtn}
