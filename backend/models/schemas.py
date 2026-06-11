@@ -6,7 +6,6 @@ Pydantic 数据模型模块
 - 文档相关: UploadResponse, DocumentInfo, DocumentListResponse 等
 - 搜索相关: SearchRequest, SearchResponse, SearchResult 等
 - 会话相关: SessionInfo, SessionListResponse, SessionDetailResponse 等
-- 评估相关: EvalRunRequest, EvalRunInfo, EvalResultItem 等
 - 认证相关: AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse 等
 - 分块预览: ChunkPreviewResponse, ParentChunkPreview, LeafChunkPreview 等
 
@@ -34,18 +33,6 @@ class QuestionRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     strategy: Literal["vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "auto"
     top_k: int = Field(default=5, ge=1, le=50)
-    session_id: Optional[str] = None
-
-
-class AgentRequest(BaseModel):
-    """
-    Agent 问答请求模型
-
-    属性:
-        question: 用户问题（1-2000字符）
-        session_id: 会话 ID（可选）
-    """
-    question: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[str] = None
 
 
@@ -184,73 +171,6 @@ class SessionDetailResponse(BaseModel):
     messages: list[MessageInfo]
 
 
-class EvalRunRequest(BaseModel):
-    """
-    评估运行请求模型
-
-    属性:
-        strategy: 评估策略（all/vector/hybrid/hybrid_rerank）
-    """
-    strategy: Literal["all", "vector", "hybrid", "hybrid_rerank", "fast", "precise", "deep", "auto"] = "all"
-
-
-class EvalRunInfo(BaseModel):
-    """
-    评估运行信息模型
-
-    包含评估运行的基本信息和统计指标。
-    """
-    id: str
-    strategy: str
-    dataset_name: str
-    question_count: int
-    status: str
-    started_at: str
-    completed_at: Optional[str] = None
-    error_message: Optional[str] = None
-    avg_faithfulness: Optional[float] = None
-    avg_context_recall: Optional[float] = None
-    avg_context_precision: Optional[float] = None
-    avg_answer_relevancy: Optional[float] = None
-
-
-class EvalResultItem(BaseModel):
-    """
-    单条评估结果模型
-
-    包含单个问题的评估详情。
-    """
-    question: str
-    ground_truth: str
-    answer: str
-    strategy: Optional[str] = None
-    contexts: list[str]
-    faithfulness: Optional[float] = None
-    context_recall: Optional[float] = None
-    context_precision: Optional[float] = None
-    answer_relevancy: Optional[float] = None
-
-
-class EvalRunDetail(BaseModel):
-    """评估运行详情模型，包含所有单条评估结果"""
-    id: str
-    strategy: str
-    dataset_name: str
-    status: str
-    started_at: str
-    completed_at: Optional[str] = None
-    error_message: Optional[str] = None
-    avg_faithfulness: Optional[float] = None
-    avg_context_recall: Optional[float] = None
-    avg_context_precision: Optional[float] = None
-    avg_answer_relevancy: Optional[float] = None
-    results: list[EvalResultItem]
-
-
-class EvalListResponse(BaseModel):
-    """评估运行列表响应模型"""
-    runs: list[EvalRunInfo]
-
 
 class AuthRegisterRequest(BaseModel):
     """
@@ -316,3 +236,43 @@ class ChunkPreviewResponse(BaseModel):
     """分块预览响应模型"""
     filename: str
     parents: list[ParentChunkPreview]
+
+
+class KGStatsResponse(BaseModel):
+    entity_count: int
+    relation_count: int
+    type_count: int
+
+
+class KGEntitySummary(BaseModel):
+    id: str | None = None
+    name: str
+    type: str | None = None
+    description: str | None = None
+
+
+class KGRelationInfo(BaseModel):
+    direction: str
+    relation: str
+    target: KGEntitySummary | None = None
+    source: KGEntitySummary | None = None
+    context: str | None = None
+
+
+class KGChunkRef(BaseModel):
+    chunk_id: str | None = None
+    filename: str | None = None
+    heading_path: str | None = None
+
+
+class KGEntityDetailResponse(BaseModel):
+    entity: KGEntitySummary
+    relations: list[KGRelationInfo]
+    mentioned_in: list[KGChunkRef]
+
+
+class KGEntityListResponse(BaseModel):
+    entities: list[KGEntitySummary]
+    total: int
+    page: int
+    page_size: int

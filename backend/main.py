@@ -12,7 +12,6 @@ FastAPI 应用的主模块，负责：
 - /api/auth: 认证路由（公开）
 - /api/documents: 文档管理路由（需认证）
 - /api/qa: 问答路由（需认证）
-- /api/eval: 评估路由（需认证）
 """
 
 import os
@@ -28,7 +27,7 @@ warnings.filterwarnings("ignore", message=".*ORM-style PyMilvus.*")
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import documents, qa, eval, auth_router
+from backend.routers import documents, qa, auth_router, knowledge_graph
 from backend.utils.auth import get_current_user
 from backend.services.reranker import reranker  # noqa: F401 — eager-load at import time
 
@@ -99,7 +98,7 @@ app.add_middleware(
 app.include_router(auth_router.router)
 app.include_router(documents.router, dependencies=[Depends(get_current_user)])
 app.include_router(qa.router, dependencies=[Depends(get_current_user)])
-app.include_router(eval.router, dependencies=[Depends(get_current_user)])
+app.include_router(knowledge_graph.router, dependencies=[Depends(get_current_user)])
 
 
 @app.get("/api/health")
