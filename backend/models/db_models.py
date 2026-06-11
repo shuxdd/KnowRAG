@@ -134,76 +134,16 @@ class UserORM(Base):
     )
 
 
-class EvalRunORM(Base):
-    """
-    评估运行记录 ORM 模型
+class RetrievalStatsORM(Base):
+    """检索命中统计表，用于驱动按需知识图谱抽取"""
+    __tablename__ = "parent_chunk_retrieval_stats"
 
-    存储每次评估运行的汇总信息。
-
-    属性:
-        id: 运行 ID（UUID）
-        strategy: 检索策略（fast/precise/deep）
-        dataset_name: 数据集名称
-        question_count: 评估问题数量
-        status: 运行状态（running/completed/failed）
-        started_at: 开始时间
-        completed_at: 完成时间
-        error_message: 错误信息
-        avg_faithfulness: 平均忠实度
-        avg_context_recall: 平均上下文召回率
-        avg_context_precision: 平均上下文精确度
-        avg_answer_relevancy: 平均答案相关性
-    """
-    __tablename__ = "eval_runs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-    strategy: Mapped[str] = mapped_column(String(20), nullable=False)
-    dataset_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    question_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
+    hit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_hit_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    avg_faithfulness: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_context_recall: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_context_precision: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_answer_relevancy: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-
-class EvalResultORM(Base):
-    """
-    评估结果详情 ORM 模型
-
-    存储每条 QA 对的评估结果。
-
-    属性:
-        id: 自增主键
-        run_id: 所属运行 ID
-        question: 问题文本
-        ground_truth: 标准答案
-        answer: 生成的答案
-        strategy: 实际使用的检索策略
-        contexts: 检索到的上下文列表（JSONB）
-        faithfulness: 忠实度
-        context_recall: 上下文召回率
-        context_precision: 上下文精确度
-        answer_relevancy: 答案相关性
-    """
-    __tablename__ = "eval_results"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    ground_truth: Mapped[str] = mapped_column(Text, nullable=False)
-    answer: Mapped[str] = mapped_column(Text, nullable=False)
-    strategy: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    contexts: Mapped[list | None] = mapped_column(JSONB, nullable=True)
-    faithfulness: Mapped[float | None] = mapped_column(Float, nullable=True)
-    context_recall: Mapped[float | None] = mapped_column(Float, nullable=True)
-    context_precision: Mapped[float | None] = mapped_column(Float, nullable=True)
-    answer_relevancy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    extracted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
