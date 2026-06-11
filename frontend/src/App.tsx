@@ -2,7 +2,7 @@ import { Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import Layout from './components/Layout'
 import DocumentsPage from './pages/DocumentsPage'
 import QAPage from './pages/QAPage'
-import EvalPage from './pages/EvalPage'
+import KGPage from './pages/KGPage'
 import LoginPage from './pages/LoginPage'
 import { useAuth } from './contexts/AuthContext'
 import './App.css'
@@ -23,7 +23,7 @@ function App() {
         <Route element={<Layout />}>
           <Route path="/qa" element={<QAPage />} />
           <Route path="/documents" element={<DocumentsPage />} />
-          <Route path="/eval" element={<EvalPage />} />
+          <Route path="/kg" element={<KGPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/qa" replace />} />

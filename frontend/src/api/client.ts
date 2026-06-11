@@ -199,14 +199,8 @@ export interface SessionDetailResponse {
 // === V2: SSE streaming ===
 
 export interface SSEEvent {
-  type: 'sources' | 'token' | 'tool' | 'error' | 'done' | 'decompose' | 'step' | 'reflect' | 'thinking'
-  data: string | Source[] | SubQEventData
-}
-
-export interface SubQEventData {
-  sub_q: number
-  text: string
-  status?: string
+  type: 'sources' | 'token' | 'error' | 'done' | 'thinking'
+  data: string | Source[]
 }
 
 export async function askQuestionStream(
@@ -280,90 +274,6 @@ export async function askQuestionStream(
   }
 }
 
-export async function askAgentStream(
-  question: string,
-  sessionId: string | null,
-  onTool: (subQ: number, toolName: string) => void,
-  onToken: (token: string) => void,
-  onSources: (sources: Source[]) => void,
-  onDone: (newSessionId: string) => void,
-  onError: (error: Error) => void,
-  onDecompose?: (msg: string, subQuestions: string[]) => void,
-  onStep?: (subQ: number, text: string, status: string) => void,
-  onReflect?: (msg: string) => void,
-  onThinking?: (subQ: number, token: string) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  try {
-    const response = await fetch('/api/qa/agent', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(localStorage.getItem('token')
-          ? { Authorization: `Bearer ${localStorage.getItem('token')}` }
-          : {}),
-      },
-      body: JSON.stringify({
-        question,
-        session_id: sessionId,
-      }),
-      signal,
-    })
-
-    const newSessionId = response.headers.get('X-Session-Id')
-    const reader = response.body?.getReader()
-    if (!reader) throw new Error('No response body')
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const event: SSEEvent = JSON.parse(line.slice(6))
-            if (event.type === 'tool') {
-              const d = event.data as SubQEventData
-              onTool(d.sub_q, d.text)
-            } else if (event.type === 'decompose') {
-              const text = event.data as string
-              const subQs = text.split('\n').filter(l => /^\d+\./.test(l)).map(l => l.replace(/^\d+\.\s*/, ''))
-              onDecompose?.(text, subQs)
-            } else if (event.type === 'step') {
-              const d = event.data as SubQEventData
-              onStep?.(d.sub_q, d.text, d.status || 'running')
-            } else if (event.type === 'reflect') {
-              onReflect?.(event.data as string)
-            } else if (event.type === 'thinking') {
-              const d = event.data as SubQEventData
-              onThinking?.(d.sub_q, d.text)
-            } else if (event.type === 'token') {
-              onToken(event.data as string)
-            } else if (event.type === 'sources') {
-              onSources(event.data as Source[])
-            } else if (event.type === 'error') {
-              onError(new Error(event.data as string))
-            } else if (event.type === 'done') {
-              if (newSessionId) onDone(newSessionId)
-            }
-          } catch {
-            // skip parse errors
-          }
-        }
-      }
-    }
-  } catch (err) {
-    onError(err as Error)
-  }
-}
-
 // === V2: Session API ===
 
 export async function listSessions(): Promise<SessionListResponse> {
@@ -380,57 +290,67 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await api.delete(`/qa/sessions/${sessionId}`)
 }
 
-// === V3: Evaluation types ===
+// === Knowledge Graph API ===
 
-export interface EvalRunInfo {
-  id: string
-  strategy: string
-  dataset_name: string
-  question_count: number
-  started_at: string
-  completed_at: string | null
-  avg_faithfulness: number | null
-  avg_context_recall: number | null
-  avg_context_precision: number | null
-  avg_answer_relevancy: number | null
+export interface KGStats {
+  entity_count: number
+  relation_count: number
+  type_count: number
 }
 
-export interface EvalResultItem {
-  question: string
-  ground_truth: string
-  answer: string
-  contexts: string[]
-  faithfulness: number | null
-  context_recall: number | null
-  context_precision: number | null
-  answer_relevancy: number | null
+export interface KGEntitySummary {
+  id: string | null
+  name: string
+  type: string | null
+  description: string | null
 }
 
-export interface EvalRunDetail extends EvalRunInfo {
-  results: EvalResultItem[]
+export interface KGRelationInfo {
+  direction: string
+  relation: string
+  target: KGEntitySummary | null
+  source: KGEntitySummary | null
+  context: string | null
 }
 
-export interface EvalListResponse {
-  runs: EvalRunInfo[]
+export interface KGChunkRef {
+  chunk_id: string | null
+  filename: string | null
+  heading_path: string | null
 }
 
-// === V3: Evaluation API ===
+export interface KGEntityDetail {
+  entity: KGEntitySummary
+  relations: KGRelationInfo[]
+  mentioned_in: KGChunkRef[]
+}
 
-export async function listEvalRuns(): Promise<EvalListResponse> {
-  const { data } = await api.get<EvalListResponse>('/eval/results')
+export interface KGEntityListResponse {
+  entities: KGEntitySummary[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export async function getKGStats(): Promise<KGStats> {
+  const { data } = await api.get<KGStats>('/kg/stats')
   return data
 }
 
-export async function getEvalRun(runId: string): Promise<EvalRunDetail> {
-  const { data } = await api.get<EvalRunDetail>(`/eval/results/${runId}`)
+export async function listKGEntities(
+  params: { entity_type?: string; search?: string; page?: number; page_size?: number } = {},
+): Promise<KGEntityListResponse> {
+  const { data } = await api.get<KGEntityListResponse>('/kg/entities', { params })
   return data
 }
 
-export async function deleteEvalRun(runId: string): Promise<void> {
-  await api.delete(`/eval/results/${encodeURIComponent(runId)}`)
-}
-
-export async function triggerEval(strategy: string = 'all'): Promise<{ run_id: string }> {
-  const { data } = await api.post<{ run_id: string }>('/eval/run', { strategy })
+export async function getKGEntityDetail(entityId: string): Promise<KGEntityDetail> {
+  const { data } = await api.get<KGEntityDetail>(`/kg/entities/${encodeURIComponent(entityId)}`)
   return data
 }
+
+export async function extractDocument(docId: string): Promise<{ detail: string }> {
+  const { data } = await api.post<{ detail: string }>(`/kg/extract/${encodeURIComponent(docId)}`)
+  return data
+}
+

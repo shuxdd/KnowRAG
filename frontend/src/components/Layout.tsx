@@ -63,14 +63,14 @@ export default function Layout() {
           文档管理
         </NavLink>
         <NavLink
-          to="/eval"
+          to="/kg"
           style={({ isActive }) => ({
             ...linkBase,
             background: isActive ? 'rgba(255,255,255,0.1)' : 'transparent',
             color: isActive ? '#fff' : 'var(--sidebar-text)',
           })}
         >
-          评估报告
+          知识图谱
         </NavLink>
         <div style={{ marginTop: 'auto', padding: '16px 24px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
           <div style={{ color: '#ccd6f6', fontSize: 13, marginBottom: 8 }}>
