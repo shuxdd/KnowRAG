@@ -100,6 +100,22 @@ services:
     depends_on:
       - "standalone"
 
+  neo4j:
+    container_name: knowrag-neo4j
+    image: neo4j:5-community
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/knowrag123
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/neo4j:/data
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   default:
     name: milvus

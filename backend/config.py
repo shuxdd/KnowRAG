@@ -70,6 +70,19 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6380/0"
     retrieval_cache_ttl: int = 600  # retrieval cache TTL in seconds
 
+    # ==================== Neo4j 配置 ====================
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "knowrag123"
+
+    # ==================== 知识图谱配置 ====================
+    kg_extract_model: str = ""  # 空则复用 mimo_model
+    kg_extract_concurrency: int = 3
+    kg_max_entities_per_chunk: int = 20
+    kg_max_relations_per_chunk: int = 15
+    kg_hit_threshold: int = 3
+    kg_hit_window_days: int = 30
+
     # === Logging ===
     log_level: str = "INFO"
 
