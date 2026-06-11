@@ -4,14 +4,12 @@
 实现多种检索策略的混合检索：
 - 向量检索（Vector Search）：使用 embedding 模型进行语义相似度检索
 - BM25 检索：基于词频的经典全文检索算法
-- HyDE 检索：使用 LLM 生成假设答案辅助检索
 - RRF 融合：倒数排名融合算法合并多检索器结果
 
 检索策略：
 - fast: 仅向量检索
 - precise: 向量 + BM25，RRF 融合
 - deep: 向量 + BM25，RRF 融合 + CrossEncoder 重排序
-- HyDE: 条件触发（问题简短或模糊时），作为第三条检索支路与向量、BM25 结果 RRF 融合
 
 缓存：
 - 使用 Redis 缓存检索结果，避免重复检索
@@ -26,26 +24,26 @@ import logging
 from collections import defaultdict
 from typing import Any
 
+import numpy as np
+
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.retrievers import BM25Retriever
-from langchain_openai import ChatOpenAI
 import redis
 
 from backend.config import get_settings
 
 settings = get_settings()
+from backend.db import SessionFactory
+from backend.models.db_models import RetrievalStatsORM
 from backend.services.parent_store import parent_store
+from backend.services.embedding_service import embedding_service
 
 logger = logging.getLogger(__name__)
 
 CACHE_PREFIX = "retrieval:"
 
 # 用于向外部暴露检索中间过程的 contextvar
-_last_hyde_answer: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "_last_hyde_answer", default=""
-)
 _retrieval_progress: contextvars.ContextVar[list[dict]] = contextvars.ContextVar(
     "_retrieval_progress", default=[]
 )
@@ -124,17 +122,6 @@ class RetrievalCache:
 
 retrieval_cache = RetrievalCache(settings.redis_url, settings.retrieval_cache_ttl)
 
-# ==================== HyDE 提示词模板 ====================
-# HyDE (Hypothetical Document Embeddings) 的核心思想：
-# 让 LLM 先生成一个"假设答案"，这个假设答案包含了回答问题所需的关键信息
-# 然后将"原始问题 + 假设答案"一起进行 embedding 检索
-# 这样可以让检索更准确，因为假设答案的语义与真实文档更接近
-HYDE_PROMPT = """You are a knowledge base assistant. Write a short passage (2-3 sentences) that answers the following question. Be factual and concise. Write in the same language as the question.
-
-Question: {query}
-
-Passage:"""
-
 
 def _content_id(doc: Document) -> str:
     """
@@ -194,6 +181,77 @@ def rrf_fusion(doc_lists: list[list[Document]], k: int = 60, top_n: int = 4) -> 
     return [doc_map[cid] for cid in sorted_ids[:top_n]]
 
 
+def mmr_select(
+    docs: list[Document],
+    embeddings: list[list[float]],
+    scores: list[float] | None = None,
+    top_n: int = 5,
+    lambda_mult: float = 0.6,
+) -> list[Document]:
+    """
+    最大边际相关性（MMR）去重选择
+
+    在选下一个结果时同时考虑与 query 的相关性和与已选结果的差异性，
+    避免返回高度相似的冗余内容。
+
+    公式：MMR(d) = λ × relevance(d) - (1-λ) × max sim(d, selected)
+
+    Args:
+        docs: 候选文档列表
+        embeddings: 每个文档对应的 embedding 向量
+        scores: 每个文档的相关性分数（如 cosine similarity / rerank score），
+                若为 None 则用 embedding 间的余弦相似度
+        top_n: 返回文档数
+        lambda_mult: 相关性权重，0~1，越大越重视相关性，越小越重视多样性
+
+    Returns:
+        MMR 选择后的文档列表
+    """
+    if len(docs) <= top_n:
+        return docs
+
+    emb_matrix = np.array(embeddings, dtype=np.float32)
+    # 归一化
+    norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
+    emb_matrix = emb_matrix / norms
+
+    # 文档间相似度矩阵
+    sim_matrix = emb_matrix @ emb_matrix.T
+
+    # 相关性分数
+    if scores is not None:
+        relevance = np.array(scores, dtype=np.float32)
+    else:
+        # 用 embedding 的范数作为 proxy（已归一化，全部为 1，退化为等权）
+        # 改用每个 doc 与其他 doc 的平均相似度作为 relevance
+        relevance = np.array(scores if scores else [1.0] * len(docs), dtype=np.float32)
+
+    selected: list[int] = []
+    remaining = list(range(len(docs)))
+
+    for _ in range(top_n):
+        if not remaining:
+            break
+        if not selected:
+            # 第一轮：选相关性最高的
+            best = remaining[int(np.argmax(relevance[remaining]))]
+        else:
+            # MMR: λ × relevance - (1-λ) × max_sim_to_selected
+            best_score = -np.inf
+            best = remaining[0]
+            for idx in remaining:
+                max_sim = max(sim_matrix[idx, s] for s in selected)
+                mmr_score = lambda_mult * relevance[idx] - (1 - lambda_mult) * max_sim
+                if mmr_score > best_score:
+                    best_score = mmr_score
+                    best = idx
+        selected.append(best)
+        remaining.remove(best)
+
+    return [docs[i] for i in selected]
+
+
 def _max_leaf_score_per_parent(leaves: list[Document]) -> dict[str, float]:
     scores: dict[str, list[float]] = {}
     for leaf in leaves:
@@ -207,12 +265,11 @@ class HybridRetriever(BaseRetriever):
     """
     混合检索器
 
-    结合三种检索策略：
+    结合两种检索策略：
     1. 向量检索（Dense）：使用 embedding 模型将文本转为向量，进行语义相似度搜索
     2. BM25 检索（Sparse）：基于词频的经典全文检索算法
-    3. HyDE 检索：让 LLM 生成假设答案，用假设答案辅助检索
 
-    三种检索结果通过 RRF（倒数排名融合）算法合并，
+    检索结果通过 RRF（倒数排名融合）算法合并，
     最终返回一个排序后的文档列表。
 
     继承自 LangChain 的 BaseRetriever，可以直接与 LangChain 生态集成。
@@ -226,21 +283,12 @@ class HybridRetriever(BaseRetriever):
     rrf_k: int = 60
     # 从每个检索器获取的候选文档数量
     fetch_k: int = 10
+    # MMR 多样性权重，0~1，越大越重视相关性，越小越重视多样性
+    mmr_lambda: float = 0.6
 
     def __init__(self, **kwargs):
-        """
-        初始化混合检索器
-
-        初始化 HyDE 专用的 LLM（用于生成假设答案）
-        """
+        """初始化混合检索器"""
         super().__init__(**kwargs)
-        self._hyde_llm = ChatOpenAI(
-            model=settings.mimo_model,
-            api_key=settings.mimo_api_key,
-            base_url=settings.mimo_base_url,
-            temperature=0.3,
-            request_timeout=10,
-        )
 
     def rebuild_bm25(self):
         """Rebuild BM25 index from current ChromaDB chunks. Call after document add/delete."""
@@ -256,56 +304,7 @@ class HybridRetriever(BaseRetriever):
             )
             logger.info("BM25 index reset (no chunks)")
 
-    def _hyde_search(self, query: str, top_k: int) -> list[Document]:
-        """
-        HyDE 检索策略
-
-        HyDE (Hypothetical Document Embeddings) 的工作流程：
-        1. 用 LLM 根据问题生成一个简短的假设答案
-        2. 将"原始问题 + 假设答案"拼接在一起
-        3. 对拼接后的文本进行 embedding
-        4. 返回与拼接文本最相似的真实文档
-
-        原理：假设答案中包含了回答问题所需的关键信息和上下文，
-        这些内容与真实文档的 embedding 更接近，因此检索更准确。
-
-        Args:
-            query: 原始查询问题
-            top_k: 要返回的文档数量
-
-        Returns:
-            与假设答案最相似的文档列表
-        """
-        try:
-            # 构建 HyDE 提示词
-            prompt = ChatPromptTemplate.from_template(HYDE_PROMPT)
-            messages = prompt.format_messages(query=query)
-            # 调用 LLM 生成假设答案
-            response = self._hyde_llm.invoke(messages)
-            hyde_answer = response.content.strip()
-
-            if not hyde_answer:
-                return []
-
-            combined = f"{query}\n{hyde_answer}"
-            _last_hyde_answer.set(hyde_answer)
-            _record_progress("hyde", f"HyDE 生成假设答案 ({len(hyde_answer)} 字): {hyde_answer[:120]}...")
-            docs = self.vector_retriever.search_with_k(combined, k=top_k)
-            _record_progress("hyde_search", f"HyDE 向量检索: 找到 {len(docs)} 个候选块")
-            return docs
-        except Exception:
-            logger.warning("HyDE search failed, skipping HyDE branch", exc_info=True)
-            return []
-
-    @staticmethod
-    def _should_hyde(query: str) -> bool:
-        """HyDE 只对极度模糊的查询触发：很短 + 典型模糊词。"""
-        vague = ["是什么", "什么叫", "什么是", "干啥", "干吗"]
-        if len(query) < 6 and any(w in query for w in vague):
-            return True
-        return False
-
-    def _expand_to_parents(self, leaves: list[Document], top_n: int, query: str = "") -> list[Document]:
+    def _expand_to_parents(self, leaves: list[Document], top_n: int, query: str = "", user_id: int | None = None) -> list[Document]:
         parent_ids_ordered: list[str] = []
         seen: set[str] = set()
         for leaf in leaves:
@@ -313,6 +312,15 @@ class HybridRetriever(BaseRetriever):
             if pid and pid not in seen:
                 parent_ids_ordered.append(pid)
                 seen.add(pid)
+
+        # Track retrieval stats for on-demand KG extraction
+        if user_id is not None:
+            import threading
+            threading.Thread(
+                target=self._update_retrieval_stats,
+                args=(parent_ids_ordered, user_id),
+                daemon=True,
+            ).start()
 
         parents = parent_store.get_by_ids(parent_ids_ordered)
         parent_map = {p.id: p for p in parents}
@@ -338,68 +346,85 @@ class HybridRetriever(BaseRetriever):
         return ordered_docs[:top_n]
 
     def _fast_retrieve(self, query: str, top_k: int, user_id: int | None = None) -> list[Document]:
-        """Fast strategy: vector retrieval only, no BM25/HyDE/Reranker."""
-        _last_hyde_answer.set("")
+        """Fast strategy: vector retrieval only, no BM25/Reranker."""
         _retrieval_progress.set([])
         _record_progress("vector", f"向量检索: 搜索与问题语义相似的叶子块...")
         docs = self.vector_retriever.search_with_k(query, k=top_k * 2, user_id=user_id)
         _record_progress("vector_result", f"向量检索: 找到 {len(docs)} 个候选块")
-        result = self._expand_to_parents(docs, top_n=top_k, query=query)
+
+        # MMR 去重：利用 Milvus 返回的 embedding
+        if len(docs) > top_k:
+            embeddings = [d.metadata.pop("_embedding") for d in docs]
+            scores = [d.metadata.get("score", 0.0) for d in docs]
+            if embeddings[0] is not None:
+                docs = mmr_select(docs, embeddings, scores, top_n=top_k, lambda_mult=self.mmr_lambda)
+                _record_progress("mmr", f"MMR 去重: 从 {top_k * 2} 个候选中选出 {len(docs)} 个多样化结果")
+            else:
+                docs = docs[:top_k]
+        else:
+            for d in docs:
+                d.metadata.pop("_embedding", None)
+
+        result = self._expand_to_parents(docs, top_n=top_k, query=query, user_id=user_id)
         _record_progress("expand", f"展开到父块: {len(docs)} 个叶子块 → {len(result)} 个父块")
         return result
 
     def _precise_retrieve(self, query: str, top_k: int, user_id: int | None = None) -> list[Document]:
-        """Precise strategy: vector + BM25 -> RRF fusion, HyDE on demand (parallel)."""
-        _last_hyde_answer.set("")
+        """Precise strategy: vector + BM25 -> RRF fusion (parallel)."""
         _retrieval_progress.set([])
         fetch_k = self.fetch_k if self.fetch_k else 10
-        use_hyde = self._should_hyde(query)
 
-        _record_progress("start", f"开始检索 (策略: precise, 获取 {fetch_k} 候选, HyDE: {'是' if use_hyde else '否'})")
+        _record_progress("start", f"开始检索 (策略: precise, 获取 {fetch_k} 候选)")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
             f_vec = ex.submit(self.vector_retriever.search_with_k, query, fetch_k, user_id)
             _record_progress("vector", "向量检索: 并行执行语义搜索...")
             f_bm25 = ex.submit(self.bm25_retriever.invoke, query)
             _record_progress("bm25", "BM25 检索: 并行执行关键词搜索...")
-            f_hyde = ex.submit(self._hyde_search, query, fetch_k) if use_hyde else None
 
             vec_docs = f_vec.result()
             bm25_raw = f_bm25.result()
-            hyde_docs = f_hyde.result() if f_hyde else []
 
         _record_progress("vector_result", f"向量检索完成: {len(vec_docs)} 个候选块")
         _record_progress("bm25_result", f"BM25 检索完成: {len(bm25_raw)} 个候选块")
+
+        # 清理 _embedding（RRF 不需要，MMR 会重新编码）
+        for d in vec_docs:
+            d.metadata.pop("_embedding", None)
 
         if user_id is not None:
             bm25_raw = [d for d in bm25_raw if d.metadata.get("user_id") == user_id]
         bm25_docs = bm25_raw[:fetch_k]
 
-        doc_lists = [vec_docs, bm25_docs]
-        if hyde_docs:
-            doc_lists.append(hyde_docs)
-            _record_progress("hyde_result", f"HyDE 检索完成: {len(hyde_docs)} 个候选块")
+        # Add graph retrieval as third path
+        graph_docs = self._graph_retrieve(query, user_id or 0, top_k=fetch_k)
+        doc_lists = [vec_docs, bm25_docs, graph_docs]
 
         total_candidates = sum(len(dl) for dl in doc_lists)
         _record_progress("rrf", f"RRF 融合: 合并 {len(doc_lists)} 路共 {total_candidates} 个候选块 → Top {top_k}")
         fused = rrf_fusion(doc_lists, k=self.rrf_k, top_n=top_k)
         _record_progress("rrf_done", f"RRF 融合完成: {len(fused)} 个结果")
 
-        result = self._expand_to_parents(fused, top_n=top_k, query=query)
+        # MMR 去重：重新编码 fused docs 的 embedding
+        if len(fused) > 1:
+            texts = [d.page_content for d in fused]
+            embeddings = embedding_service.embed(texts)
+            scores = [d.metadata.get("score", 0.0) for d in fused]
+            fused = mmr_select(fused, embeddings, scores, top_n=top_k, lambda_mult=self.mmr_lambda)
+            _record_progress("mmr", f"MMR 去重: 选出 {len(fused)} 个多样化结果")
+
+        result = self._expand_to_parents(fused, top_n=top_k, query=query, user_id=user_id)
         _record_progress("expand", f"展开到父块: {len(fused)} 个叶子块 → {len(result)} 个父块")
         return result
 
     def _deep_retrieve(self, query: str, top_k: int, user_id: int | None = None) -> list[Document]:
-        """Deep strategy: vector + BM25 -> RRF -> Reranker, HyDE on demand (parallel)."""
-        _last_hyde_answer.set("")
+        """Deep strategy: vector + BM25 -> RRF -> Reranker (parallel)."""
         _retrieval_progress.set([])
-        use_hyde = self._should_hyde(query)
         cache_key = retrieval_cache.build_cache_key(
             namespace="hybrid_deep",
             query=query,
             strategy="deep",
             top_k=top_k,
-            extra={"hyde": use_hyde},
         )
         cached = retrieval_cache.get(cache_key, label=query)
         if cached:
@@ -409,30 +434,31 @@ class HybridRetriever(BaseRetriever):
         from backend.services.reranker import reranker
 
         fetch_k = self.fetch_k if self.fetch_k else 10
-        _record_progress("start", f"开始深度检索 (获取 {fetch_k} 候选, HyDE: {'是' if use_hyde else '否'})")
+        _record_progress("start", f"开始深度检索 (获取 {fetch_k} 候选)")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
             f_vec = ex.submit(self.vector_retriever.search_with_k, query, fetch_k, user_id)
             _record_progress("vector", "向量检索: 并行执行语义搜索...")
             f_bm25 = ex.submit(self.bm25_retriever.invoke, query)
             _record_progress("bm25", "BM25 检索: 并行执行关键词搜索...")
-            f_hyde = ex.submit(self._hyde_search, query, fetch_k) if use_hyde else None
 
             vec_docs = f_vec.result()
             bm25_raw = f_bm25.result()
-            hyde_docs = f_hyde.result() if f_hyde else []
 
         _record_progress("vector_result", f"向量检索完成: {len(vec_docs)} 个候选块")
         _record_progress("bm25_result", f"BM25 检索完成: {len(bm25_raw)} 个候选块")
+
+        # 清理 _embedding（RRF 不需要，MMR 会重新编码）
+        for d in vec_docs:
+            d.metadata.pop("_embedding", None)
 
         if user_id is not None:
             bm25_raw = [d for d in bm25_raw if d.metadata.get("user_id") == user_id]
         bm25_docs = bm25_raw[:fetch_k]
 
-        doc_lists = [vec_docs, bm25_docs]
-        if hyde_docs:
-            doc_lists.append(hyde_docs)
-            _record_progress("hyde_result", f"HyDE 检索完成: {len(hyde_docs)} 个候选块")
+        # Add graph retrieval as third path
+        graph_docs = self._graph_retrieve(query, user_id or 0, top_k=fetch_k)
+        doc_lists = [vec_docs, bm25_docs, graph_docs]
 
         total_candidates = sum(len(dl) for dl in doc_lists)
         _record_progress("rrf", f"RRF 融合: 合并 {len(doc_lists)} 路共 {total_candidates} 个候选块 → Top 10")
@@ -440,27 +466,143 @@ class HybridRetriever(BaseRetriever):
         _record_progress("rerank", f"CrossEncoder 重排序: 对 {len(fused)} 个候选块重新打分排序")
         reranked = reranker.rerank(query, fused, top_n=top_k)
         _record_progress("rerank_done", f"重排序完成: {len(reranked)} 个结果")
-        result = self._expand_to_parents(reranked, top_n=top_k, query=query)
+
+        # MMR 去重：重新编码 reranked docs 的 embedding
+        if len(reranked) > 1:
+            texts = [d.page_content for d in reranked]
+            embeddings = embedding_service.embed(texts)
+            scores = [d.metadata.get("score", 0.0) for d in reranked]
+            reranked = mmr_select(reranked, embeddings, scores, top_n=top_k, lambda_mult=self.mmr_lambda)
+            _record_progress("mmr", f"MMR 去重: 选出 {len(reranked)} 个多样化结果")
+
+        result = self._expand_to_parents(reranked, top_n=top_k, query=query, user_id=user_id)
         _record_progress("expand", f"展开到父块: {len(reranked)} 个叶子块 → {len(result)} 个父块")
         retrieval_cache.set(cache_key, result, label=query)
         return result
+
+    def _graph_retrieve(self, query: str, user_id: int, top_k: int = 10) -> list[Document]:
+        """Graph retrieval: extract entities from query, traverse Neo4j graph."""
+        from backend.services.graph_service import graph_service
+        from backend.services.entity_extractor import entity_extractor
+
+        entities = entity_extractor.extract_query_entities(query)
+        if not entities:
+            return []
+
+        chunk_ids = graph_service.search_by_entities(entities, user_id=user_id, top_k=top_k)
+        if not chunk_ids:
+            return []
+
+        parents = parent_store.get_by_ids(chunk_ids)
+        return [
+            Document(
+                page_content=p.content,
+                metadata={"doc_id": p.id, "filename": p.filename, "heading_path": p.heading_path, "score": 1.0},
+            )
+            for p in parents
+        ]
+
+    def _update_retrieval_stats(self, parent_ids: list[str], user_id: int) -> None:
+        """Async-safe: increment hit_count for retrieved parent chunks."""
+        from datetime import datetime, timezone, timedelta
+
+        if not parent_ids:
+            return
+        try:
+            window = timedelta(days=settings.kg_hit_window_days)
+            cutoff = datetime.now(timezone.utc) - window
+            uuids = []
+            for pid in parent_ids:
+                try:
+                    import uuid as _uuid
+                    uuids.append(_uuid.UUID(pid))
+                except ValueError:
+                    continue
+            if not uuids:
+                return
+
+            with SessionFactory() as session:
+                for uid in uuids:
+                    row = session.query(RetrievalStatsORM).filter_by(chunk_id=uid).first()
+                    if row:
+                        if row.last_hit_at and row.last_hit_at < cutoff:
+                            row.hit_count = 1
+                        else:
+                            row.hit_count = row.hit_count + 1
+                        row.last_hit_at = datetime.now(timezone.utc)
+                    else:
+                        session.add(RetrievalStatsORM(
+                            chunk_id=uid, hit_count=1,
+                            last_hit_at=datetime.now(timezone.utc), extracted=False,
+                            user_id=user_id,
+                        ))
+                session.commit()
+
+                # Trigger extraction for chunks that hit threshold
+                to_extract = (
+                    session.query(RetrievalStatsORM)
+                    .filter(
+                        RetrievalStatsORM.chunk_id.in_(uuids),
+                        RetrievalStatsORM.hit_count >= settings.kg_hit_threshold,
+                        RetrievalStatsORM.extracted == False,
+                    )
+                    .all()
+                )
+                if to_extract:
+                    import threading
+                    extract_ids = [str(r.chunk_id) for r in to_extract]
+                    extract_user_id = to_extract[0].user_id
+                    threading.Thread(
+                        target=self._trigger_extraction, args=(extract_ids, extract_user_id), daemon=True
+                    ).start()
+        except Exception as e:
+            logger.warning(f"Failed to update retrieval stats: {e}")
+
+    def _trigger_extraction(self, chunk_ids: list[str], user_id: int) -> None:
+        """Background: extract entities from chunks and write to Neo4j."""
+        from backend.services.graph_service import graph_service
+        from backend.services.entity_extractor import entity_extractor
+
+        parents = parent_store.get_by_ids(chunk_ids)
+        for p in parents:
+            try:
+                result = entity_extractor.extract_from_chunk(p.content)
+                if result["entities"]:
+                    import json as _json
+                    graph_service.build_graph_for_chunk(
+                        chunk_id=p.id,
+                        filename=p.filename,
+                        heading_path=_json.dumps(p.heading_path, ensure_ascii=False),
+                        entities=result["entities"],
+                        relations=result["relations"],
+                        user_id=user_id,
+                    )
+                    logger.info(f"Extracted {len(result['entities'])} entities from chunk {p.id}")
+
+                import uuid as _uuid
+                with SessionFactory() as session:
+                    row = session.query(RetrievalStatsORM).filter_by(chunk_id=_uuid.UUID(p.id)).first()
+                    if row:
+                        row.extracted = True
+                        session.commit()
+            except Exception as e:
+                logger.warning(f"Extraction failed for chunk {p.id}: {e}")
 
     def _get_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
         orig_k = self.vector_retriever.search_kwargs.get("k", 4)
         return self._deep_retrieve(query, top_k=orig_k)
 
     async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
-        use_hyde = self._should_hyde(query)
+        orig_k = self.vector_retriever.search_kwargs.get("k", 4)
         cache_key = retrieval_cache.build_cache_key(
             namespace="hybrid_deep",
             query=query,
             strategy="deep",
-            top_k=self.vector_retriever.search_kwargs.get("k", 4),
-            extra={"hyde": use_hyde},
+            top_k=orig_k,
         )
         cached = retrieval_cache.get(cache_key, label=query)
         if cached:
-            return cached[:self.vector_retriever.search_kwargs.get("k", 4)]
+            return cached[:orig_k]
 
         from backend.services.reranker import reranker
 
@@ -474,27 +616,28 @@ class HybridRetriever(BaseRetriever):
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, self.bm25_retriever.invoke, query)
 
-        async def _hyde():
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._hyde_search, query, fetch_k)
-
-        if use_hyde:
-            vec_docs, bm25_raw, hyde_docs = await asyncio.gather(
-                _vec(), _bm25(), _hyde()
-            )
-        else:
-            vec_docs, bm25_raw = await asyncio.gather(_vec(), _bm25())
-            hyde_docs = []
+        vec_docs, bm25_raw = await asyncio.gather(_vec(), _bm25())
 
         bm25_docs = bm25_raw[:fetch_k]
 
+        # 清理 _embedding
+        for d in vec_docs:
+            d.metadata.pop("_embedding", None)
+
         doc_lists = [vec_docs, bm25_docs]
-        if hyde_docs:
-            doc_lists.append(hyde_docs)
 
         fused = rrf_fusion(doc_lists, k=self.rrf_k, top_n=10)
         reranked = reranker.rerank(query, fused, top_n=orig_k)
-        result = self._expand_to_parents(reranked, top_n=orig_k, query=query)
+
+        # MMR 去重
+        if len(reranked) > 1:
+            loop = asyncio.get_event_loop()
+            texts = [d.page_content for d in reranked]
+            embeddings = await loop.run_in_executor(None, embedding_service.embed, texts)
+            scores = [d.metadata.get("score", 0.0) for d in reranked]
+            reranked = mmr_select(reranked, embeddings, scores, top_n=orig_k, lambda_mult=self.mmr_lambda)
+
+        result = self._expand_to_parents(reranked, top_n=orig_k, query=query, user_id=None)
         retrieval_cache.set(cache_key, result, label=query)
         return result
 
@@ -537,9 +680,7 @@ def _build_hybrid_retriever() -> HybridRetriever:
 
 hybrid_retriever: HybridRetriever = _build_hybrid_retriever()
 
-# 导出 progress/thinking 工具供外部读取
-def get_last_hyde_answer() -> str:
-    return _last_hyde_answer.get()
 
+# 导出 progress/thinking 工具供外部读取
 def get_retrieval_progress() -> list[dict]:
     return _retrieval_progress.get()
