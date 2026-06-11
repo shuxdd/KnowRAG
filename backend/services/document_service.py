@@ -177,6 +177,16 @@ class DocumentService:
     def delete_file(self, filename: str, user_id: int | None = None) -> dict:
         parent_count = parent_store.delete_by_filename(filename, user_id=user_id)
         leaf_count = vector_service.delete_by_filename(filename, user_id=user_id)
+
+        # Clean up Neo4j graph data
+        try:
+            from backend.services.graph_service import graph_service
+            parent_chunks = parent_store.get_by_filename(filename, user_id=user_id)
+            chunk_ids = [p.id for p in parent_chunks]
+            graph_service.delete_by_filename(filename, user_id=user_id or 0, chunk_ids=chunk_ids)
+        except Exception as e:
+            logger.warning(f"Graph cleanup failed for '{filename}': {e}")
+
         for f in os.listdir(settings.upload_dir):
             if f.endswith("_" + filename):
                 os.remove(os.path.join(settings.upload_dir, f))
