@@ -18,7 +18,7 @@
 向量集合配置：
 - 名称：knowledge_base（可配置）
 - 距离度量：COSINE
-- 向量维度：512（bge-small-zh-v1.5）
+- 向量维度：由 embedding 模型决定（bge-large-zh-v1.5 = 1024）
 """
 
 import json
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 COLLECTION_NAME = settings.milvus_collection
-EMBEDDING_DIM = 512
+EMBEDDING_DIM = embedding_service.dim
 MAX_STRING_LEN = 512
 
 
@@ -194,7 +194,7 @@ class VectorService:
                 output_fields=[
                     "id", "content", "filename", "parent_id",
                     "heading_path_json", "page", "chunk_index", "preserve",
-                    USER_ID_FIELD,
+                    USER_ID_FIELD, "embedding",
                 ],
             )
 
@@ -202,20 +202,22 @@ class VectorService:
             if results and results[0]:
                 for hit in results[0]:
                     score = max(0.0, min(1.0, hit.get("distance", 0)))
+                    entity = hit.get("entity", hit)
                     metadata = {
-                        "parent_id": hit.get("parent_id", ""),
-                        "filename": hit.get("filename", ""),
+                        "parent_id": entity.get("parent_id", ""),
+                        "filename": entity.get("filename", ""),
                         "heading_path": json.loads(
-                            hit.get("heading_path_json", "[]")
+                            entity.get("heading_path_json", "[]")
                         ),
-                        "page": hit.get("page", 0),
-                        "chunk_index": hit.get("chunk_index", 0),
-                        "preserve": hit.get("preserve", False),
-                        "doc_id": hit.get("id", ""),
+                        "page": entity.get("page", 0),
+                        "chunk_index": entity.get("chunk_index", 0),
+                        "preserve": entity.get("preserve", False),
+                        "doc_id": entity.get("id", ""),
                         "score": score,
+                        "_embedding": entity.get("embedding"),
                     }
                     docs.append(Document(
-                        page_content=hit.get("content", ""),
+                        page_content=entity.get("content", ""),
                         metadata=metadata,
                     ))
             return docs

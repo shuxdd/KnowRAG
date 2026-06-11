@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  askQuestionStream, askAgentStream, listSessions, deleteSession, getSession,
+  askQuestionStream, listSessions, deleteSession, getSession,
   Source, SessionInfo, MessageInfo,
 } from '../api/client'
 
@@ -196,17 +196,6 @@ export default function QAPage() {
   const [streamSources, setStreamSources] = useState<Source[]>([])
   const [expanded, setExpanded] = useState<string | null>(null)
   const [thinkingSteps, setThinkingSteps] = useState<{ step: string; text: string }[]>([])
-  const [agentMode, setAgentMode] = useState(false)
-  interface SubTask {
-    question: string
-    status: 'pending' | 'running' | 'done'
-    toolStatus: string
-    thinking: string
-    thinkingOpen: boolean
-  }
-  const [subTasks, setSubTasks] = useState<SubTask[]>([])
-  const [decomposePlan, setDecomposePlan] = useState('')
-  const [reflectStatus, setReflectStatus] = useState('')
 
   const msgEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -237,8 +226,8 @@ export default function QAPage() {
   const newChat = () => {
     abortRef.current = null
     setActiveSid(null); setMessages([]); setStreamText(''); setStreaming(false)
-    setCurrentRoute(''); setLastResponseTime(null); setSubTasks([]); setThinkingSteps([])
-    setDecomposePlan(''); setReflectStatus(''); setStreamSources([]); streamSourcesRef.current = []
+    setCurrentRoute(''); setLastResponseTime(null); setThinkingSteps([])
+    setStreamSources([]); streamSourcesRef.current = []
     setTimeout(() => inputRef.current?.focus(), 0)
   }
 
@@ -253,9 +242,6 @@ export default function QAPage() {
   }
 
   const send = async () => {
-    if (agentMode) {
-      return sendAgent()
-    }
     if (!input.trim() || streaming) return
     const q = input.trim()
     setInput('')
@@ -303,82 +289,6 @@ export default function QAPage() {
         abortRef.current = null
       },
       (step, text) => { if (onTargetSession()) setThinkingSteps(prev => [...prev, { step, text }]) },
-      controller.signal,
-    )
-  }
-
-  const sendAgent = async () => {
-    if (!input.trim() || streaming) return
-    const q = input.trim()
-    setInput('')
-    setMessages(p => [...p, { role: 'user', content: q }])
-    setStreamText(''); setStreamSources([]); streamSourcesRef.current = []; setSubTasks([]); setDecomposePlan(''); setReflectStatus(''); setThinkingSteps([]); setStreaming(true)
-    const t0 = Date.now()
-    const targetSid = activeSid
-    const onTargetSession = () => activeSidRef.current === targetSid
-
-    const controller = new AbortController()
-    abortRef.current = controller
-
-    await askAgentStream(
-      q, activeSid,
-      (subQ, toolName) => {
-        if (!onTargetSession()) return
-        setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, toolStatus: toolName } : t))
-      },
-      (t) => { if (onTargetSession()) setStreamText(p => p + t) },
-      (srcs) => { if (onTargetSession()) { setStreamSources(srcs); streamSourcesRef.current = srcs }},
-      (newId) => {
-        const elapsed = Date.now() - t0
-        const finalSources = streamSourcesRef.current
-        if (onTargetSession()) {
-          setStreamText(prev => {
-            setMessages(msgs => [...msgs, {
-              role: 'assistant', content: prev,
-              sources: finalSources.length > 0 ? finalSources : null,
-            }])
-            return ''
-          })
-          if (!activeSid) setActiveSid(newId)
-          setLastResponseTime(elapsed)
-          setSubTasks([])
-          setDecomposePlan('')
-          setReflectStatus('')
-        }
-        setStreaming(false)
-        loadSessions()
-        abortRef.current = null
-      },
-      (err) => {
-        if (err.name === 'AbortError') {
-          abortRef.current = null
-          setStreaming(false)
-          return
-        }
-        if (onTargetSession()) { alert('Agent error: ' + err.message) }
-        setStreaming(false)
-        abortRef.current = null
-      },
-      (msg, subQuestions) => {
-        if (!onTargetSession()) return
-        setDecomposePlan(msg)
-        setSubTasks(subQuestions.map(q => ({
-          question: q,
-          status: 'pending' as const,
-          toolStatus: '',
-          thinking: '',
-          thinkingOpen: true,
-        })))
-      },
-      (subQ, text, status) => {
-        if (!onTargetSession()) return
-        setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, status: status as SubTask['status'], toolStatus: status === 'done' ? '' : t.toolStatus } : t))
-      },
-      (msg) => { if (onTargetSession()) setReflectStatus(msg) },
-      (subQ, token) => {
-        if (!onTargetSession()) return
-        setSubTasks(prev => prev.map((t, i) => i === subQ ? { ...t, thinking: t.thinking + token } : t))
-      },
       controller.signal,
     )
   }
@@ -492,7 +402,6 @@ export default function QAPage() {
                             s === 'rewrite' || s === 'sub_queries' ? '#dbeafe' :
                             s === 'vector' || s === 'vector_result' ? '#dcfce7' :
                             s === 'bm25' || s === 'bm25_result' ? '#dcfce7' :
-                            s === 'hyde' || s === 'hyde_search' || s === 'hyde_result' || s === 'hyde_answer' ? '#fce7f3' :
                             s === 'rrf' || s === 'rrf_done' ? '#fef3c7' :
                             s === 'rerank' || s === 'rerank_done' ? '#ffedd5' :
                             s === 'expand' ? '#e0f2fe' :
@@ -506,8 +415,6 @@ export default function QAPage() {
                             s === 'sub_queries' ? '🔀' :
                             s === 'vector' || s === 'vector_result' ? '🔍' :
                             s === 'bm25' || s === 'bm25_result' ? '📖' :
-                            s === 'hyde' || s === 'hyde_search' || s === 'hyde_result' ? '🧠' :
-                            s === 'hyde_answer' ? '💡' :
                             s === 'rrf' || s === 'rrf_done' ? '⚡' :
                             s === 'rerank' || s === 'rerank_done' ? '📊' :
                             s === 'expand' ? '📦' :
@@ -529,88 +436,6 @@ export default function QAPage() {
                       </div>
                     )}
 
-                    {/* SubTask 卡片 */}
-                    {subTasks.length > 0 && (
-                      <div style={{
-                        marginTop: 8,
-                        display: 'grid',
-                        gridTemplateColumns: `repeat(${Math.min(subTasks.length, 3)}, 1fr)`,
-                        gap: 8,
-                      }}>
-                        {subTasks.map((st, i) => (
-                          <div key={i} style={{
-                            padding: '8px 10px',
-                            borderRadius: 6,
-                            border: '1px solid',
-                            borderColor: st.status === 'done' ? '#86efac' : st.status === 'running' ? '#fde68a' : '#e2e8f0',
-                            background: st.status === 'done' ? '#f0fdf4' : st.status === 'running' ? '#fefce8' : '#f8fafc',
-                            fontSize: 12,
-                            minWidth: 0,
-                          }}>
-                            <div style={{ fontWeight: 600, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span>{st.status === 'done' ? '✓' : st.status === 'running' ? '●' : '○'}</span>
-                              <span style={{
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                color: st.status === 'done' ? '#166534' : st.status === 'running' ? '#854d0e' : '#94a3b8',
-                              }}>
-                                子问题{i + 1}
-                              </span>
-                            </div>
-                            <div style={{
-                              fontSize: 11, color: '#64748b',
-                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }} title={st.question}>
-                              {st.question}
-                            </div>
-                            {st.toolStatus && (
-                              <div style={{
-                                marginTop: 4, fontSize: 10, color: '#92400e',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                              }}>
-                                {st.toolStatus}
-                              </div>
-                            )}
-                            {st.thinking && (
-                              <details open={st.thinkingOpen} style={{ marginTop: 4 }}>
-                                <summary style={{
-                                  cursor: 'pointer', fontSize: 10, color: '#475569', fontWeight: 500,
-                                }}
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  setSubTasks(prev => prev.map((t, j) => j === i ? { ...t, thinkingOpen: !t.thinkingOpen } : t))
-                                }}>
-                                  思考过程 ({st.thinking.length} 字)
-                                </summary>
-                                <div style={{
-                                  maxHeight: 150, overflowY: 'auto', whiteSpace: 'pre-wrap',
-                                  fontSize: 10, color: '#94a3b8', marginTop: 2,
-                                }}>
-                                  {st.thinking}
-                                </div>
-                              </details>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {decomposePlan && (
-                      <div style={{
-                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
-                        background: '#dbeafe', color: '#1e40af',
-                        fontSize: 12, fontWeight: 500,
-                      }}>
-                        {decomposePlan}
-                      </div>
-                    )}
-                    {reflectStatus && (
-                      <div style={{
-                        marginTop: 8, padding: '6px 10px', borderRadius: 6,
-                        background: '#ffedd5', color: '#9a3412',
-                        fontSize: 12, fontWeight: 500,
-                      }}>
-                        {reflectStatus}
-                      </div>
-                    )}
                     {streamSources.length > 0 && streamText.length > 0 && (
                       <SourcesWidget msgIdx="stream" sources={streamSources} expandedKey={expanded} onToggle={setExpanded} />
                     )}
@@ -653,19 +478,6 @@ export default function QAPage() {
                     : `${(lastResponseTime / 1000).toFixed(1)}s`}
                 </span>
               )}
-              <button
-                onClick={() => setAgentMode(m => !m)}
-                title={agentMode ? 'Switch to normal' : 'Switch to Agent'}
-                style={{
-                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                  cursor: 'pointer', border: 'none',
-                  background: agentMode ? '#ede9fe' : '#f1f5f9',
-                  color: agentMode ? '#6d28d9' : '#94a3b8',
-                  flexShrink: 0,
-                }}
-              >
-                {agentMode ? 'Agent' : 'Normal'}
-              </button>
             </div>
             <input
               ref={inputRef}

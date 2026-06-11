@@ -11,7 +11,7 @@
 检索策略映射：
 - fast/vector: _fast_retrieve（仅向量检索）
 - precise/hybrid: _precise_retrieve（向量 + BM25 混合）
-- hybrid_rerank/deep: _deep_retrieve（向量 + BM25 + HyDE + Rerank）
+- hybrid_rerank/deep: _deep_retrieve（向量 + BM25 + Rerank）
 """
 
 import json
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 from backend.models.schemas import Source
 from backend.services.hybrid_retriever import (
     hybrid_retriever, retrieval_cache, rrf_fusion,
-    get_last_hyde_answer, get_retrieval_progress,
+    get_retrieval_progress,
 )
 from backend.services.query_rewriter import QueryRewriter
 from backend.services.query_router import query_router
@@ -393,135 +393,40 @@ class QAService:
         top_k: int = 5,
         user_id: int | None = None,
     ) -> AsyncIterator[str]:
+        from backend.services.rag_graph import rag_graph  # 延迟导入避免循环
+
         history = session_service.get_history(session_id)
         history_text = self._format_history(session_id, history.messages)
 
-        actual_strategy, queries, rewrite_result = self._prepare_search(
-            question,
-            strategy,
-            history_text,
-        )
-
-        # 思考过程：意图分类
-        if actual_strategy != "chat":
-            intent = self._classify_intent(question)
-            intent_desc = {
-                "compare": "对比分析",
-                "define": "概念定义",
-                "list": "列举归纳",
-                "how_to": "步骤指导",
-                "factoid": "事实查询",
-            }
-            yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': 'intent', 'text': f'意图分类: {intent_desc.get(intent, intent)}'}}, ensure_ascii=False)}\n\n"
-
-        # 思考过程：路由决策
-        route_desc = {
-            "deep": "深度检索（向量 + BM25 + HyDE + Rerank，适合复杂问题）",
-            "hybrid_rerank": "深度检索（向量 + BM25 + HyDE + Rerank）",
-            "precise": "精确检索（向量 + BM25 混合，适合一般问题）",
-            "hybrid": "精确检索（向量 + BM25 混合）",
-            "fast": "快速检索（仅向量检索，适合简单问题）",
-            "vector": "快速检索（仅向量检索）",
-            "chat": "闲聊模式",
+        initial_state = {
+            "question": question,
+            "session_id": session_id,
+            "user_id": user_id,
+            "top_k": top_k,
+            "strategy": strategy,
+            "history_text": history_text,
+            "actual_strategy": "",
+            "plan": {},
+            "queries": [],
+            "rewrite_result": {},
+            "intent": "",
+            "plan_reasoning": "",
+            "docs": [],
+            "sources": [],
+            "context": "",
+            "answer": "",
+            "gen_messages": [],
+            "evaluation": "",
+            "eval_reason": "",
+            "retry_count": 0,
+            "max_retries": 2,
+            "needs_retry": False,
+            "reflection": "",
+            "reflection_reason": "",
         }
-        route_text = route_desc.get(actual_strategy, actual_strategy)
-        yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': 'route', 'text': f'策略路由: {route_text}'}}, ensure_ascii=False)}\n\n"
 
-        # 思考过程：查询改写
-        if actual_strategy != "chat":
-            rewritten = rewrite_result.get("rewritten", question)
-            if rewritten != question:
-                changes = rewrite_result.get("changes", [])
-                changes_text = f"（{', '.join(changes)}）" if changes else ""
-                yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': 'rewrite', 'text': f'查询改写: {rewritten} {changes_text}'}}, ensure_ascii=False)}\n\n"
-            if rewrite_result.get("sub_queries"):
-                sub_text = " → ".join(rewrite_result["sub_queries"])
-                yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': 'sub_queries', 'text': f'子问题拆分: {sub_text}'}}, ensure_ascii=False)}\n\n"
-
-        if actual_strategy == "chat":
-            chat_prompt = ChatPromptTemplate.from_template(
-                "You are a helpful enterprise knowledge base assistant. "
-                "Answer greetings or casual conversation naturally and briefly.\n\n"
-                "User: {question}\nAssistant:"
-            )
-            messages = chat_prompt.format_messages(question=question)
-            full_answer = ""
-            yield f"data: {json.dumps({'type': 'sources', 'data': [], 'route': 'chat', 'rewrite': {}}, ensure_ascii=False)}\n\n"
-            async for chunk in self.llm.astream(messages):
-                token = chunk.content
-                if token:
-                    full_answer += token
-                    yield f"data: {json.dumps({'type': 'token', 'data': token}, ensure_ascii=False)}\n\n"
-            session_service.add_message(session_id, "user", question)
-            session_service.add_message(session_id, "assistant", full_answer, [])
-            session = session_service.get_session(session_id)
-            if session and session.get("title") == "新对话":
-                title = question[:30] + ("..." if len(question) > 30 else "")
-                session_service.update_title(session_id, title)
-            self._maybe_compress(session_id)
-            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-            return
-
-        docs = self._search_with_plan_user(
-            query=question,
-            actual_strategy=actual_strategy,
-            queries=queries,
-            top_k=top_k,
-            chat_history=history_text,
-            use_cache=True,
-            user_id=user_id,
-        )
-        context = self._build_context(docs) if docs else ""
-
-        # 思考过程：检索流水线各步骤
-        progress = get_retrieval_progress()
-        if progress:
-            for entry in progress:
-                yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': entry['stage'], 'text': entry['text']}}, ensure_ascii=False)}\n\n"
-
-        # 思考过程：HyDE 假设答案（如有）
-        hyde_answer = get_last_hyde_answer()
-        if hyde_answer:
-            yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': 'hyde_answer', 'text': f'HyDE 假设答案: {hyde_answer[:250]}'}}, ensure_ascii=False)}\n\n"
-
-        # 思考过程：检索结果汇总
-        sources = self._extract_sources(docs)
-        yield f"data: {json.dumps({'type': 'sources', 'data': [s.model_dump() for s in sources], 'rewrite': rewrite_result, 'route': actual_strategy}, ensure_ascii=False)}\n\n"
-
-        if not docs:
-            full_answer = "未在知识库中找到相关信息。"
-            yield f"data: {json.dumps({'type': 'token', 'data': full_answer}, ensure_ascii=False)}\n\n"
-        else:
-            intent = self._classify_intent(question)
-            yield f"data: {json.dumps({'type': 'thinking', 'data': {'step': 'synthesize', 'text': f'LLM 生成答案中（意图: {intent}, 参考 {len(docs)} 篇文档）...'}}, ensure_ascii=False)}\n\n"
-            prompt = self._get_prompt(intent)
-            messages = prompt.format_messages(
-                chat_history=history_text,
-                context=context,
-                question=question,
-            )
-            full_answer = ""
-            async for chunk in self.llm.astream(messages):
-                token = chunk.content
-                if token:
-                    full_answer += token
-                    yield f"data: {json.dumps({'type': 'token', 'data': token}, ensure_ascii=False)}\n\n"
-
-        session_service.add_message(session_id, "user", question)
-        session_service.add_message(
-            session_id,
-            "assistant",
-            full_answer,
-            [s.model_dump() for s in sources],
-        )
-
-        session = session_service.get_session(session_id)
-        if session and session.get("title") == "新对话":
-            title = question[:30] + ("..." if len(question) > 30 else "")
-            session_service.update_title(session_id, title)
-
-        self._maybe_compress(session_id)
-        yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+        async for event in rag_graph.astream(initial_state, stream_mode="custom"):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 qa_service = QAService()

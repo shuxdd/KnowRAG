@@ -146,11 +146,10 @@ class TestRetrieveStrategies:
         assert vec.search_kwargs.get("k") == orig_k
 
     def test_deep_retrieve_is_full_pipeline(self):
-        """_deep_retrieve uses vector + BM25 + HyDE + Reranker."""
+        """_deep_retrieve uses vector + BM25 + Reranker."""
         doc = self._make_doc("deep content")
         retriever, vec, bm25 = self._build_retriever(vec_docs=[doc], bm25_docs=[doc])
-        with patch.object(retriever, "_hyde_search", return_value=[doc]), \
-             patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
+        with patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
              patch("backend.services.reranker.reranker") as mock_reranker, \
              patch("backend.services.hybrid_retriever.retrieval_cache.get", return_value=None):
             mock_reranker.rerank.return_value = [doc]
@@ -159,25 +158,12 @@ class TestRetrieveStrategies:
             assert bm25.call_count >= 1
             assert isinstance(result, list)
 
-    def test_deep_retrieve_calls_hyde_search(self):
-        """_deep_retrieve calls _hyde_search."""
-        doc = self._make_doc("deep content")
-        retriever, vec, bm25 = self._build_retriever(vec_docs=[doc], bm25_docs=[doc])
-        with patch.object(retriever, "_hyde_search", return_value=[doc]) as mock_hyde, \
-             patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
-             patch("backend.services.reranker.reranker") as mock_reranker, \
-             patch("backend.services.hybrid_retriever.retrieval_cache.get", return_value=None):
-            mock_reranker.rerank.return_value = [doc]
-            retriever._deep_retrieve("test", top_k=3)
-            mock_hyde.assert_called_once()
-
     def test_deep_retrieve_restores_orig_k(self):
         """_deep_retrieve restores vector_retriever.search_kwargs k."""
         doc = self._make_doc("content")
         retriever, vec, bm25 = self._build_retriever(vec_docs=[doc], bm25_docs=[doc])
         orig_k = vec.search_kwargs.get("k", 4)
-        with patch.object(retriever, "_hyde_search", return_value=[doc]), \
-             patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
+        with patch.object(retriever, "_expand_to_parents", return_value=[doc]), \
              patch("backend.services.reranker.reranker") as mock_reranker, \
              patch("backend.services.hybrid_retriever.retrieval_cache.get", return_value=None):
             mock_reranker.rerank.return_value = [doc]

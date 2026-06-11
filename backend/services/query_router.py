@@ -10,7 +10,7 @@
 - chat: 寒暄/感谢/告别/自我介绍/简单确认（不检索，LLM 直接回复）
 - fast: 定义/简单事实/是非判断（仅向量检索）
 - precise: 列举/步骤/方法（向量 + BM25 + RRF）
-- deep: 对比/原因/推理/多跳（向量 + BM25 + RRF + HyDE + Reranker，默认）
+- deep: 对比/原因/推理/多跳（向量 + BM25 + RRF + Reranker，默认）
 """
 
 import re

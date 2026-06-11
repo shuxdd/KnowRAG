@@ -21,6 +21,7 @@
 5. 存入向量数据库（ChromaDB）和关系数据库（PostgreSQL）
 """
 
+import asyncio
 import os
 import logging
 from datetime import datetime
@@ -71,7 +72,9 @@ async def upload_document(
 
     try:
         filepath = document_service.save_upload(content, file.filename)
-        doc_id = document_service.process_file(filepath, file.filename, user_id=current_user.id)
+        doc_id = await asyncio.to_thread(
+            document_service.process_file, filepath, file.filename, current_user.id
+        )
     except Exception as e:
         logger.error(f"Document processing failed for '{file.filename}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"文档处理失败: {str(e)}")
@@ -90,29 +93,32 @@ async def upload_documents(
     files: List[UploadFile] = File(...),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """批量文档上传接口"""
-    results = []
-    for file in files:
+    """批量文档上传接口（并发处理）"""
+
+    async def _process_one(file: UploadFile) -> dict:
         try:
             validate_file(file)
             content = await file.read()
             filepath = document_service.save_upload(content, file.filename)
-            doc_id = document_service.process_file(filepath, file.filename, user_id=current_user.id)
-
+            doc_id = await asyncio.to_thread(
+                document_service.process_file, filepath, file.filename, current_user.id
+            )
             chunks_count = len(vector_service.get_by_filename(file.filename, user_id=current_user.id))
-            results.append({
+            return {
                 "doc_id": doc_id,
                 "filename": file.filename,
                 "chunks_count": chunks_count,
                 "status": "ok",
-            })
+            }
         except Exception as e:
-            results.append({
+            return {
                 "filename": file.filename,
                 "status": "error",
                 "error": str(e),
-            })
-    return {"results": results, "total": len(results)}
+            }
+
+    results = await asyncio.gather(*[_process_one(f) for f in files])
+    return {"results": list(results), "total": len(results)}
 
 
 @router.get("", response_model=DocumentListResponse)

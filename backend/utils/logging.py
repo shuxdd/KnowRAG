@@ -13,7 +13,7 @@ from pathlib import Path
 def setup_logging(level: str = "INFO", log_dir: str = "logs") -> None:
     """Configure root logger with console and rotating-file handlers.
 
-    Called once at application startup (main.py) or CLI entry (eval_cli.py).
+    Called once at application startup (main.py).
     Existing handlers are cleared first, so calling this multiple times is
     safe (idempotent).
     """

@@ -9,23 +9,29 @@
 3. 超出大小限制的父块：先按 h3 分割，再按段落分割，最后按文本分割
 
 叶子块构建：
-- 表格和代码块：preserve=True，保留不合并
+- 表格、代码块和列表：preserve=True，保留不合并
 - 普通文本：优先语义分块（句子 embedding 相似度骤降处切分），失败时回退到 RecursiveCharacterTextSplitter
 - 过大的语义块：二次递归切分
 - 过小的叶子块：合并到前一个叶子块
 """
 
+import logging
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 
 import numpy as np
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from backend.config import get_settings
 from backend.services.parsing.base import StructuredElement
 from backend.models.chunk_types import ParentChunk, LeafChunk
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -45,6 +51,7 @@ class HierarchicalChunker:
             separators=["\n\n", "\n", "。", ".", " ", ""],
         )
         self._semantic_model = None  # lazy init
+        self._llm = None  # lazy init
 
     @property
     def semantic_model(self):
@@ -57,6 +64,18 @@ class HierarchicalChunker:
                 device=settings.embedding_device,
             )
         return self._semantic_model
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            self._llm = ChatOpenAI(
+                model=settings.mimo_model,
+                api_key=settings.mimo_api_key,
+                base_url=settings.mimo_base_url,
+                temperature=0.0,
+                request_timeout=10,
+            )
+        return self._llm
 
     def chunk(
         self, elements: list[StructuredElement], filename: str
@@ -135,6 +154,38 @@ class HierarchicalChunker:
             created_at=created_at,
         )
 
+    def _generate_description(
+        self,
+        element: StructuredElement,
+        heading_path: list[str],
+        prev_text: str,
+        next_text: str,
+    ) -> str:
+        """Generate a one-line description for a preserved element via LLM."""
+        type_label = {"code": "代码块", "table": "表格", "list": "列表"}.get(
+            element.element_type, "内容块"
+        )
+        path_str = " > ".join(heading_path) if heading_path else "(无章节路径)"
+        ctx_parts = []
+        if prev_text:
+            ctx_parts.append(f"前文：{prev_text[:200]}")
+        if next_text:
+            ctx_parts.append(f"后文：{next_text[:200]}")
+        context_str = "\n".join(ctx_parts) if ctx_parts else "(无相邻上下文)"
+
+        content_preview = element.content[:500]
+
+        prompt = [
+            SystemMessage(content="你是一个文档分析助手。根据上下文为内容块生成一句简短的中文描述，不超过50字，说明其内容和作用。只输出描述，不要其他内容。"),
+            HumanMessage(content=f"章节路径：{path_str}\n{context_str}\n\n{type_label}内容：\n{content_preview}"),
+        ]
+        try:
+            resp = self.llm.invoke(prompt)
+            return resp.content.strip()
+        except Exception as e:
+            logger.warning(f"LLM description generation failed: {e}")
+            return ""
+
     def _build_leaves(
         self,
         parent: ParentChunk,
@@ -145,7 +196,7 @@ class HierarchicalChunker:
         preserve_items: list[tuple[int, StructuredElement]] = []
 
         for idx, el in enumerate(elements):
-            if el.element_type in ("table", "code"):
+            if el.element_type in ("table", "code", "list"):
                 preserve_items.append((idx, el))
             else:
                 text_parts.append((idx, el.content))
@@ -172,11 +223,43 @@ class HierarchicalChunker:
                 )
 
         last_used_ci = len(leaves)
+        preserve_indices = {idx for idx, _ in preserve_items}
+
+        def _gen_one(idx: int, el: StructuredElement) -> tuple[int, str]:
+            prev_text, next_text = "", ""
+            for j in range(idx - 1, -1, -1):
+                if j not in preserve_indices:
+                    prev_text = elements[j].content
+                    break
+            for j in range(idx + 1, len(elements)):
+                if j not in preserve_indices:
+                    next_text = elements[j].content
+                    break
+            desc = self._generate_description(el, parent.heading_path, prev_text, next_text)
+            return idx, desc
+
+        descriptions: dict[int, str] = {}
+        if preserve_items:
+            max_workers = min(len(preserve_items), 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {
+                    ex.submit(_gen_one, idx, el): idx
+                    for idx, el in preserve_items
+                }
+                for future in as_completed(futures):
+                    try:
+                        idx, desc = future.result()
+                        descriptions[idx] = desc
+                    except Exception as e:
+                        logger.warning(f"Description generation task failed: {e}")
+
         for idx, el in preserve_items:
+            desc = descriptions.get(idx, "")
+            content = f"{desc}\n\n{el.content}" if desc else el.content
             leaves.append(
                 LeafChunk(
                     id=str(uuid.uuid4()),
-                    content=el.content,
+                    content=content,
                     heading_path=parent.heading_path,
                     parent_id=parent.id,
                     filename=parent.filename,

@@ -17,7 +17,6 @@ import re
 from datetime import datetime, timezone
 
 import fitz
-from collections import Counter
 from backend.config import get_settings
 from backend.services.parsing.base import BaseParser, StructuredElement
 
@@ -151,10 +150,17 @@ class PdfParser(BaseParser):
             doc.close()
             return []
 
-        base_size = Counter(round(s, 1) for s in sizes).most_common(1)[0][0]
-        h1_threshold = base_size * settings.pdf_h1_ratio
-        h2_low = base_size * settings.pdf_h2_ratio
-        h3_low = base_size * settings.pdf_h3_ratio
+        import numpy as np
+
+        size_array = np.array([round(s, 1) for s in sizes])
+        h1_threshold = float(np.quantile(size_array, settings.pdf_heading_quantile_h1))
+        h2_low = float(np.quantile(size_array, settings.pdf_heading_quantile_h2))
+        h3_low = float(np.quantile(size_array, settings.pdf_heading_quantile_h3))
+
+        # If all sizes are the same, quantiles collapse — no headings should be detected
+        if h1_threshold == h3_low:
+            h1_threshold += 0.1
+            h2_low += 0.05
 
         def is_heading(bbox: fitz.Rect, size: float, bold: bool) -> int | None:
             if bbox.x0 < margin or bbox.x1 > page_width - margin:

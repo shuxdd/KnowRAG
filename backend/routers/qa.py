@@ -7,7 +7,6 @@
 - POST /api/qa/ask: 非流式问答（V1）
 - POST /api/qa/search: 文档检索（V1）
 - POST /api/qa/ask/stream: 流式问答（V2）
-- POST /api/qa/agent: Agent 流式问答（V3）
 - GET /api/qa/sessions: 获取会话列表（V2）
 - GET /api/qa/sessions/{session_id}: 获取会话详情（V2）
 - DELETE /api/qa/sessions/{session_id}: 删除会话（V2）
@@ -15,7 +14,7 @@
 检索策略：
 - fast: 快速检索，仅使用向量检索
 - precise: 精确检索，向量 + BM25 混合
-- deep: 深度检索，向量 + BM25 + HyDE + Rerank
+- deep: 深度检索，向量 + BM25 + Rerank
 - auto: 自动选择策略（根据问题复杂度）
 - hybrid/hybrid_rerank: 与 precise/deep 等价
 
@@ -41,11 +40,9 @@ from backend.models.schemas import (
     SessionDetailResponse,
     MessageInfo,
     Source,
-    AgentRequest,
 )
 from backend.services.qa_service import qa_service
 from backend.services.session_service import session_service
-from backend.services.agent_service import agent_service
 from backend.utils.auth import get_current_user, CurrentUser
 
 logger = logging.getLogger(__name__)
@@ -156,46 +153,6 @@ async def ask_stream(
         except Exception as e:
             logger.error(f"Ask stream error: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'data': f'问答处理失败: {str(e)}'}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        safe_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Session-Id": session_id,
-        },
-    )
-
-
-# === V3: Agent 流式问答接口 ===
-
-@router.post("/agent")
-async def ask_agent(
-    req: AgentRequest,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    """
-    Agent 流式问答接口 (V3)
-    使用 LangGraph Agent 自主决定检索策略和工具调用
-
-    SSE 事件: decompose → step → tool → thinking → token → reflect → sources → error (如发生) → done
-    """
-    session_id = req.session_id or session_service.create_session(user_id=current_user.id)
-    history = session_service.get_history(session_id)
-
-    async def safe_stream():
-        try:
-            async for event in agent_service.ask_stream(
-                question=req.question,
-                session_id=session_id,
-                chat_history_messages=history.messages if history else None,
-                user_id=current_user.id,
-            ):
-                yield event
-        except Exception as e:
-            logger.error(f"Agent stream error: {e}", exc_info=True)
-            yield f"data: {json.dumps({'type': 'error', 'data': f'Agent 处理失败: {str(e)}'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         safe_stream(),

@@ -4,7 +4,7 @@
 将 SentenceTransformer 的加载和 encode 从 VectorService 中解耦，
 使 VectorService 可被 ChromaDB 和 Milvus 共用。
 
-模型：BAAI/bge-small-zh-v1.5，输出维度 512
+模型：由 config.embedding_model 配置决定
 """
 
 import os

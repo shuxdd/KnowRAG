@@ -116,3 +116,44 @@ def test_empty_pdf_returns_empty(monkeypatch):
     parser = PdfParser()
     elements = parser.parse("fake.pdf")
     assert elements == []
+
+
+def test_adaptive_heading_small_size_gap(tmp_path):
+    """PDF where heading is only slightly larger than body (ratio ~1.17) should still detect heading."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    # Body is 12pt, heading is 14pt — ratio 1.17, below old h1_ratio=1.4
+    page.insert_text((72, 100), "Section Title", fontsize=14)
+    page.insert_text((72, 130), "Body text paragraph one." * 5, fontsize=12)
+    page.insert_text((72, 160), "Body text paragraph two." * 5, fontsize=12)
+    page.insert_text((72, 190), "Body text paragraph three." * 5, fontsize=12)
+    path = tmp_path / "small_gap.pdf"
+    doc.save(str(path))
+    doc.close()
+
+    parser = PdfParser()
+    elements = parser.parse(str(path))
+    headings = [e for e in elements if e.element_type == "heading"]
+    assert any("Section Title" in h.content for h in headings), (
+        f"14pt heading among 12pt body not detected. Got: {[h.content for h in headings]}"
+    )
+
+
+def test_adaptive_heading_uniform_doc(tmp_path):
+    """PDF with uniform font size should produce no headings."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    for i in range(10):
+        page.insert_text((72, 100 + i * 20), f"Paragraph {i} text.", fontsize=12)
+    path = tmp_path / "uniform.pdf"
+    doc.save(str(path))
+    doc.close()
+
+    parser = PdfParser()
+    elements = parser.parse(str(path))
+    headings = [e for e in elements if e.element_type == "heading"]
+    assert len(headings) == 0, f"Uniform doc should have no headings, got {[h.content for h in headings]}"
